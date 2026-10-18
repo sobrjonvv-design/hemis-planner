@@ -1,11 +1,11 @@
 /**
- * Модуль хранения данных и облачной синхронизации (Телефон ↔ ПК)
- * Сохраняет:
- * - studentProfile
- * - lessons (расписание)
- * - tasks (задания с чек-листами и ссылками)
- * - attendance (пропуски НБ / Davomat и часы предметов)
- * - reminderSettings (настройки вечерних напоминаний)
+ * Модуль хранения данных и облачной синхронизации (Телефон ↔ ПК) для всех пользователей
+ * Поддерживает:
+ * 1. Быструю облачную синхронизацию по ID / Логину и паролю (БЕЗ токенов GitHub и регистрации!)
+ *    Работает через связку Bytebin + KeyVal + Ntfy с поддержкой CORS на GitHub Pages
+ * 2. GitHub Gist API (для продвинутых пользователей)
+ * 3. Firebase Realtime Database REST API
+ * 4. Экспорт и импорт резервной копии в формате .json
  */
 (function (global) {
   const STATE_KEY = 'hemis_planner_state_v1';
@@ -13,6 +13,7 @@
   const HEMIS_AUTH_KEY = 'hemis_planner_auth_v1';
   const REMINDER_KEY = 'hemis_planner_reminders_v1';
   const GIST_FILENAME = 'hemis-planner-data.json';
+  const KEYVAL_APP_KEY = 'osmjpp9p';
 
   function loadLocalState() {
     try {
@@ -31,7 +32,8 @@
         studentProfile: parsed.studentProfile || null,
         lessons: Array.isArray(parsed.lessons) ? parsed.lessons : [],
         tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
-        attendance: parsed.attendance && typeof parsed.attendance === 'object' ? parsed.attendance : {},
+        attendance:
+          parsed.attendance && typeof parsed.attendance === 'object' ? parsed.attendance : {},
         updatedAt: parsed.updatedAt || Date.now()
       };
     } catch (e) {
@@ -46,7 +48,7 @@
       lessons: state.lessons || [],
       tasks: state.tasks || [],
       attendance: state.attendance || {},
-      updatedAt: Date.now()
+      updatedAt: state.updatedAt || Date.now()
     };
     localStorage.setItem(STATE_KEY, JSON.stringify(payload));
     return payload;
@@ -94,19 +96,22 @@
   function loadCloudConfig() {
     try {
       const raw = localStorage.getItem(CLOUD_CONFIG_KEY);
-      return raw
-        ? JSON.parse(raw)
-        : {
-            provider: 'gist',
-            gistToken: '',
-            gistId: '',
-            firebaseUrl: '',
-            firebaseSyncKey: '',
-            firebaseSecret: ''
-          };
+      const parsed = raw ? JSON.parse(raw) : {};
+      return {
+        provider: parsed.provider || 'quick',
+        quickId: parsed.quickId || '',
+        quickPin: parsed.quickPin || '',
+        gistToken: parsed.gistToken || '',
+        gistId: parsed.gistId || '',
+        firebaseUrl: parsed.firebaseUrl || '',
+        firebaseSyncKey: parsed.firebaseSyncKey || '',
+        firebaseSecret: parsed.firebaseSecret || ''
+      };
     } catch (_) {
       return {
-        provider: 'gist',
+        provider: 'quick',
+        quickId: '',
+        quickPin: '',
         gistToken: '',
         gistId: '',
         firebaseUrl: '',
@@ -121,6 +126,9 @@
   }
 
   function isCloudConfigured(config = loadCloudConfig()) {
+    if (config.provider === 'quick') {
+      return Boolean(config.quickId && config.quickId.trim() && config.quickPin && config.quickPin.trim());
+    }
     if (config.provider === 'gist') {
       return Boolean(config.gistToken && config.gistToken.trim());
     }
@@ -128,6 +136,28 @@
       return Boolean(config.firebaseUrl && config.firebaseSyncKey);
     }
     return false;
+  }
+
+  /**
+   * Генерирует детерминированный безопасный хэш-ключ комнаты из ID студента и пароля синхронизации
+   */
+  function computeQuickSyncKey(quickId, quickPin) {
+    const raw = `hemis_v1_${String(quickId).trim().toLowerCase()}_${String(quickPin).trim()}`;
+    let h1 = 0xdeadbeef ^ raw.length;
+    let h2 = 0x41c6ce57 ^ raw.length;
+    for (let i = 0, ch; i < raw.length; i++) {
+      ch = raw.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    const hex = (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
+    const cleanPrefix = String(quickId)
+      .trim()
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 12);
+    return `hp_${cleanPrefix}_${hex}`;
   }
 
   async function pushStateToCloud(state, config = loadCloudConfig()) {
@@ -139,6 +169,61 @@
       updatedAt: Date.now()
     };
 
+    // 1. Быстрая синхронизация без токенов (по ID студента и ПИН/паролю)
+    if (config.provider === 'quick') {
+      if (!config.quickId || !config.quickPin) {
+        throw new Error('Введите ваш ID (логин) и придумайте код/пароль синхронизации.');
+      }
+      const syncRoomKey = computeQuickSyncKey(config.quickId, config.quickPin);
+      const jsonStr = JSON.stringify(payload);
+
+      let storedPointer = false;
+
+      // Сохраняем полный JSON в Bytebin и записываем указатель в KeyVal
+      try {
+        const bbRes = await fetch('https://bytebin.lucko.me/post', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: jsonStr
+        });
+        if (bbRes.ok) {
+          const bbData = await bbRes.json();
+          if (bbData && bbData.key) {
+            const kvUrl = `https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/${KEYVAL_APP_KEY}/${encodeURIComponent(
+              syncRoomKey
+            )}/${encodeURIComponent(bbData.key)}`;
+            const kvRes = await fetch(kvUrl, { method: 'POST' });
+            if (kvRes.ok) {
+              storedPointer = true;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Bytebin/KeyVal warning:', e);
+      }
+
+      // Также дублируем в канал ntfy.sh для мгновенного резерва
+      try {
+        await fetch(`https://ntfy.sh/${syncRoomKey}`, {
+          method: 'PUT',
+          headers: {
+            Filename: 'state.json'
+          },
+          body: jsonStr
+        });
+        storedPointer = true;
+      } catch (e) {
+        console.warn('Ntfy mirror warning:', e);
+      }
+
+      if (!storedPointer) {
+        throw new Error('Не удалось связаться с облачным сервером. Проверьте подключение к интернету.');
+      }
+
+      return { syncRoomKey, updatedAt: payload.updatedAt };
+    }
+
+    // 2. GitHub Gist
     if (config.provider === 'gist') {
       if (!config.gistToken) {
         throw new Error('Укажите GitHub Personal Access Token с правом gist.');
@@ -183,6 +268,7 @@
       return { gistId: result.id, updatedAt: payload.updatedAt };
     }
 
+    // 3. Firebase Realtime DB
     if (config.provider === 'firebase') {
       if (!config.firebaseUrl || !config.firebaseSyncKey) {
         throw new Error('Укажите URL базы Firebase и ваш личный ключ синхронизации.');
@@ -210,6 +296,67 @@
   }
 
   async function pullStateFromCloud(config = loadCloudConfig()) {
+    // 1. Быстрая загрузка по ID студента и паролю
+    if (config.provider === 'quick') {
+      if (!config.quickId || !config.quickPin) {
+        throw new Error('Введите ваш ID (логин) и код/пароль синхронизации.');
+      }
+      const syncRoomKey = computeQuickSyncKey(config.quickId, config.quickPin);
+
+      // Сначала пробуем получить указатель из KeyVal -> Bytebin
+      try {
+        const kvUrl = `https://keyvalue.immanuel.co/api/KeyVal/GetValue/${KEYVAL_APP_KEY}/${encodeURIComponent(
+          syncRoomKey
+        )}`;
+        const kvRes = await fetch(kvUrl);
+        if (kvRes.ok) {
+          const rawKey = await kvRes.json();
+          if (rawKey && typeof rawKey === 'string' && rawKey.trim()) {
+            const bbRes = await fetch(`https://bytebin.lucko.me/${encodeURIComponent(rawKey.trim())}`);
+            if (bbRes.ok) {
+              const parsed = await bbRes.json();
+              if (parsed && (Array.isArray(parsed.lessons) || Array.isArray(parsed.tasks))) {
+                return saveLocalState(parsed);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('KeyVal/Bytebin pull fallback:', e);
+      }
+
+      // Резервный вариант через ntfy.sh
+      const ntfyRes = await fetch(`https://ntfy.sh/${syncRoomKey}/json?poll=1&since=all`);
+      if (ntfyRes.ok) {
+        const text = await ntfyRes.text();
+        const lines = text
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean);
+
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const eventObj = JSON.parse(lines[i]);
+            if (eventObj.attachment?.url) {
+              const fileRes = await fetch(eventObj.attachment.url);
+              if (fileRes.ok) {
+                const parsed = await fileRes.json();
+                return saveLocalState(parsed);
+              }
+            } else if (eventObj.message && eventObj.message.startsWith('{')) {
+              const parsed = JSON.parse(eventObj.message);
+              return saveLocalState(parsed);
+            }
+          } catch (_) {}
+        }
+      }
+
+      throw new Error(
+        'По этому ID и паролю в облаке ещё нет данных. Сначала нажмите «⬆ Отправить в облако» на том устройстве, где загружено расписание!'
+      );
+    }
+
+    // 2. GitHub Gist
     if (config.provider === 'gist') {
       if (!config.gistToken || !config.gistId) {
         throw new Error('Для загрузки из GitHub Gist укажите Token и ID существующего Gist.');
@@ -236,6 +383,7 @@
       return saveLocalState(parsed);
     }
 
+    // 3. Firebase Realtime DB
     if (config.provider === 'firebase') {
       if (!config.firebaseUrl || !config.firebaseSyncKey) {
         throw new Error('Укажите URL базы Firebase и ваш личный ключ синхронизации.');

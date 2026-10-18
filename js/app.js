@@ -82,7 +82,13 @@
 
     if (online) {
       dot.classList.add('online');
-      text.textContent = cloudConfig.provider === 'gist' ? 'Gist Sync' : 'Firebase Sync';
+      if (cloudConfig.provider === 'quick') {
+        text.textContent = `Облако (${cloudConfig.quickId})`;
+      } else if (cloudConfig.provider === 'gist') {
+        text.textContent = 'Gist Sync';
+      } else {
+        text.textContent = 'Firebase Sync';
+      }
     } else {
       dot.classList.remove('online');
       text.textContent = 'Облако';
@@ -1968,6 +1974,9 @@
 
     document.getElementById('btnCloudSync').addEventListener('click', () => {
       cloudConfig = loadCloudConfig();
+      document.getElementById('quickSyncIdInput').value =
+        cloudConfig.quickId || hemisConfig.login || '';
+      document.getElementById('quickSyncPinInput').value = cloudConfig.quickPin || '';
       document.getElementById('gistTokenInput').value = cloudConfig.gistToken || '';
       document.getElementById('gistIdInput').value = cloudConfig.gistId || '';
       document.getElementById('firebaseUrlInput').value = cloudConfig.firebaseUrl || '';
@@ -1984,6 +1993,9 @@
         currentCloudMode = pill.getAttribute('data-cloud-mode');
 
         document
+          .getElementById('cloudModeQuick')
+          ?.classList.toggle('hidden', currentCloudMode !== 'quick');
+        document
           .getElementById('cloudModeGist')
           .classList.toggle('hidden', currentCloudMode !== 'gist');
         document
@@ -1999,7 +2011,14 @@
     });
 
     const readCloudFormValues = () => ({
-      provider: currentCloudMode === 'firebase' ? 'firebase' : 'gist',
+      provider:
+        currentCloudMode === 'firebase'
+          ? 'firebase'
+          : currentCloudMode === 'gist'
+          ? 'gist'
+          : 'quick',
+      quickId: document.getElementById('quickSyncIdInput')?.value.trim() || '',
+      quickPin: document.getElementById('quickSyncPinInput')?.value.trim() || '',
       gistToken: document.getElementById('gistTokenInput').value.trim(),
       gistId: document.getElementById('gistIdInput').value.trim(),
       firebaseUrl: document.getElementById('firebaseUrlInput').value.trim(),
@@ -2031,9 +2050,13 @@
           document.getElementById('gistIdInput').value = res.gistId;
         }
         msgBox.className = 'alert-box success';
-        msgBox.textContent = res.gistId
-          ? `Данные успешно сохранены в GitHub Gist! Ваш Gist ID: ${res.gistId}`
-          : 'Данные успешно отправлены в Firebase!';
+        if (cloudConfig.provider === 'quick') {
+          msgBox.textContent = `Готово! Теперь на телефоне введите ID «${cloudConfig.quickId}» и ваш пароль, и нажмите «⬇ Загрузить из облака»!`;
+        } else if (res.gistId) {
+          msgBox.textContent = `Данные успешно сохранены в GitHub Gist! Ваш Gist ID: ${res.gistId}`;
+        } else {
+          msgBox.textContent = 'Данные успешно отправлены в Firebase!';
+        }
         updateCloudStatusIndicator(true);
       } catch (err) {
         msgBox.className = 'alert-box error';
@@ -2089,7 +2112,7 @@
     });
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     initEventListeners();
     initPwaAndServiceWorker();
     renderAll();
@@ -2098,5 +2121,16 @@
     setInterval(renderLiveClassTimer, 1000);
     // Проверка вечернего напоминания каждые 25 секунд
     setInterval(checkScheduledEveningReminder, 25000);
+
+    // Автоматическая фоновая подгрузка свежих данных из облака при открытии сайта
+    if (isCloudConfigured(cloudConfig)) {
+      try {
+        const remote = await pullStateFromCloud(cloudConfig);
+        if (remote && (remote.lessons?.length || remote.tasks?.length)) {
+          appState = remote;
+          renderAll();
+        }
+      } catch (_) {}
+    }
   });
 })(window);

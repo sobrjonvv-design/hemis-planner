@@ -578,38 +578,56 @@
     </div>
   </div>
 
-  <!-- Модальное окно: Облачная синхронизация (GitHub Gist / Firebase / JSON) -->
+  <!-- Модальное окно: Облачная синхронизация (Быстрый код / GitHub Gist / Firebase / JSON) -->
   <div class="modal-backdrop hidden" id="modalCloudSync">
     <div class="modal-card modal-lg" role="dialog" aria-labelledby="modalCloudTitle">
       <div class="modal-header">
-        <h2 id="modalCloudTitle">Облачное хранение и синхронизация (ПК ↔ Телефон)</h2>
+        <h2 id="modalCloudTitle">Облачная синхронизация (ПК ↔ Телефон)</h2>
         <button class="btn-close" data-close-modal="modalCloudSync" aria-label="Закрыть">&times;</button>
       </div>
 
       <div class="modal-body">
         <p class="modal-intro">
-          Все ваши данные мгновенно сохраняются в браузере, а для синхронизации между компьютером и телефоном на <strong>GitHub Pages</strong> вы можете подключить бесплатное облако <strong>GitHub Gist</strong> или <strong>Firebase Realtime Database</strong>.
+          Синхронизируйте ваше расписание, пропуски «НБ» и задания между компьютером и телефоном по <strong>простому ID и паролю</strong> (без токенов и регистрации!).
         </p>
 
         <div class="mode-pills">
-          <button class="mode-pill active" data-cloud-mode="gist">GitHub Gist (Рекомендуется)</button>
-          <button class="mode-pill" data-cloud-mode="firebase">Firebase Realtime DB</button>
-          <button class="mode-pill" data-cloud-mode="backup">Файл резервной копии (.json)</button>
+          <button class="mode-pill active" data-cloud-mode="quick">⚡ По ID и паролю (Для всех)</button>
+          <button class="mode-pill" data-cloud-mode="backup">Файл (.json)</button>
+          <button class="mode-pill" data-cloud-mode="gist">GitHub Gist</button>
+          <button class="mode-pill" data-cloud-mode="firebase">Firebase</button>
         </div>
 
         <form id="cloudSyncForm">
-          <div id="cloudModeGist" class="cloud-mode-section">
+          <!-- Быстрая синхронизация без токенов (По умолчанию) -->
+          <div id="cloudModeQuick" class="cloud-mode-section">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="quickSyncIdInput">Ваш ID студента (или любой логин) *</label>
+                <input type="text" id="quickSyncIdInput" class="input-field" placeholder="Например: 516231102891" />
+              </div>
+              <div class="form-group">
+                <label for="quickSyncPinInput">Придумайте код/пароль синхронизации *</label>
+                <input type="password" id="quickSyncPinInput" class="input-field" placeholder="Например: 2026 или ваш пароль" />
+              </div>
+            </div>
+            <div class="cors-box">
+              <small class="form-hint" style="display:block; color:var(--text-secondary);">
+                <strong>Как пользоваться:</strong><br/>
+                1. На компьютере введите ваш ID и придумайте пароль, затем нажмите <strong>«⬆ Отправить в облако»</strong>.<br/>
+                2. На телефоне откройте сайт, введите <strong>те же самые ID и пароль</strong> и нажмите <strong>«⬇ Загрузить из облака»</strong> — всё расписание и задания сразу появятся!
+              </small>
+            </div>
+          </div>
+
+          <div id="cloudModeGist" class="cloud-mode-section hidden">
             <div class="form-group">
               <label for="gistTokenInput">GitHub Personal Access Token (с правом `gist`)</label>
               <input type="password" id="gistTokenInput" class="input-field" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" />
-              <small class="form-hint">
-                Создается за 30 секунд в GitHub → Settings → Developer settings → Personal access tokens (с галочкой <code>gist</code>).
-              </small>
             </div>
             <div class="form-group">
               <label for="gistIdInput">ID существующего Gist (оставьте пустым при первом подключении)</label>
               <input type="text" id="gistIdInput" class="input-field" placeholder="Автоматически создастся при первом сохранении" />
-              <small class="form-hint">После создания скопируйте этот ID на телефон, чтобы синхронизировать одну и ту же базу.</small>
             </div>
           </div>
 
