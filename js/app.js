@@ -24,7 +24,7 @@
   let hemisConfig = loadHemisAuthConfig();
   let cloudConfig = loadCloudConfig();
   let currentHemisMode = 'credentials';
-  let currentCloudMode = cloudConfig.provider || 'gist';
+  let activeDayFilter = 'all'; // 'all' | 1..6
   let autoSyncTimeout = null;
   let editingSubtasks = [];
   let deferredPwaPrompt = null;
@@ -55,7 +55,7 @@
     container.appendChild(toast);
     setTimeout(() => {
       toast.remove();
-    }, 3400);
+    }, 3200);
   }
 
   function persistState(triggerCloud = true) {
@@ -69,9 +69,9 @@
           await pushStateToCloud(appState, cloudConfig);
           updateCloudStatusIndicator(true);
         } catch (err) {
-          console.warn('Фоновая синхронизация не удалась:', err.message);
+          console.warn('Фоновая синхронизация:', err.message);
         }
-      }, 1200);
+      }, 1000);
     }
   }
 
@@ -80,15 +80,9 @@
     const text = document.getElementById('cloudStatusText');
     if (!dot || !text) return;
 
-    if (online) {
+    if (online && cloudConfig.quickId) {
       dot.classList.add('online');
-      if (cloudConfig.provider === 'quick') {
-        text.textContent = `Облако (${cloudConfig.quickId})`;
-      } else if (cloudConfig.provider === 'gist') {
-        text.textContent = 'Gist Sync';
-      } else {
-        text.textContent = 'Firebase Sync';
-      }
+      text.textContent = `Облако (${cloudConfig.quickId})`;
     } else {
       dot.classList.remove('online');
       text.textContent = 'Облако';
@@ -101,15 +95,10 @@
     dot.classList.toggle('online', Boolean(reminderSettings.enabled));
   }
 
-  /**
-   * Возвращает информацию о пропусках (НБ / Davomat) для предмета
-   * Лимит НБ = 25% от общего числа часов по предмету (по умолчанию 60 ч -> лимит 15 ч)
-   */
   function getSubjectAttendance(subjectName) {
     const clean = (subjectName || '').trim();
     if (!appState.attendance) appState.attendance = {};
 
-    // Ищем без учёта регистра
     let recordKey = Object.keys(appState.attendance).find(
       (k) => k.toLowerCase().trim() === clean.toLowerCase()
     );
@@ -150,9 +139,7 @@
     const rec = appState.attendance[info.key];
     rec.missedHours = Math.max(0, (Number(rec.missedHours) || 0) + deltaHours);
     persistState();
-    showToast(
-      `Пропуски по «${subjectName}»: ${rec.missedHours} ч. из лимита ${info.limitHours} ч.`
-    );
+    showToast(`НБ «${subjectName}»: ${rec.missedHours} из ${info.limitHours} ч.`);
   }
 
   function setSubjectTotalHours(subjectName, totalHours) {
@@ -160,12 +147,9 @@
     const rec = appState.attendance[info.key];
     rec.totalHours = Math.max(12, Number(totalHours) || 60);
     persistState();
-    showToast(`Установлено часов по предмету: ${rec.totalHours} ч.`);
+    showToast(`Нагрузка предмета: ${rec.totalHours} ч.`);
   }
 
-  /**
-   * 1. 🔴 Живой таймер пар («Сейчас идёт» / «До конца пары» / «Перемена»)
-   */
   function parseTimeToSeconds(timeStr) {
     const parts = String(timeStr || '08:30').split(':');
     const h = parseInt(parts[0], 10) || 0;
@@ -182,18 +166,28 @@
     return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
   }
 
+  /**
+   * Компактный живой статус и таймер внутри верхнего статус-бара
+   */
   function renderLiveClassTimer() {
     const banner = document.getElementById('liveTimerBanner');
+    const subtextEl = document.getElementById('briefingSubtext');
     if (!banner) return;
 
+    const { todayId, tomorrowId, now } = getTodayAndTomorrowDays();
+    const activeDayIds = new Set(appState.lessons.map((l) => Number(l.dayOfWeek)));
+    const pendingTasks = appState.tasks.filter((t) => !t.completed);
+
     if (appState.lessons.length === 0) {
-      banner.classList.add('hidden');
+      banner.innerHTML = `<span class="live-headline">Добро пожаловать в HEMIS Planner</span>`;
+      if (subtextEl) {
+        subtextEl.textContent =
+          'Нажмите «HEMIS» вверху, чтобы загрузить ваше расписание и записывать задания к парам.';
+      }
       return;
     }
 
-    const { todayId, tomorrowId, now } = getTodayAndTomorrowDays();
     const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-
     const todayLessons = appState.lessons
       .filter((l) => Number(l.dayOfWeek) === todayId)
       .sort((a, b) => a.startTime.localeCompare(b.startTime));
@@ -216,7 +210,6 @@
       }
     }
 
-    // Если активная пара сменилась — обновим подсветку карточек
     const currentId = currentLesson ? currentLesson.id : null;
     if (currentId !== lastLiveLessonId) {
       lastLiveLessonId = currentId;
@@ -225,7 +218,7 @@
       });
     }
 
-    // Сценарий А: Прямо сейчас идёт пара!
+    // 1. Сейчас идёт пара
     if (currentLesson) {
       const remainSec = currentLesson.endSec - nowSec;
       const totalDur = Math.max(1, currentLesson.endSec - currentLesson.startSec);
@@ -234,112 +227,97 @@
         Math.max(0, Math.round(((nowSec - currentLesson.startSec) / totalDur) * 100))
       );
 
-      banner.className = 'live-timer-banner';
       banner.innerHTML = `
-        <div class="live-timer-top">
-          <span class="live-status-pill">
-            <span class="pulse-dot"></span>
-            СЕЙЧАС ИДЁТ • ${escapeHtml(currentLesson.pairName)} (${escapeHtml(
-        currentLesson.startTime
-      )}–${escapeHtml(currentLesson.endTime)})
-          </span>
-          <div class="live-countdown-box">
-            До конца пары: ${formatDuration(remainSec)}
+        <div class="live-timer-inline">
+          <div class="live-timer-top">
+            <span class="live-status-pill">
+              <span class="pulse-dot"></span>
+              СЕЙЧАС ИДЁТ • ${escapeHtml(currentLesson.pairName)}
+            </span>
+            <span class="live-countdown-box">Осталось ${formatDuration(remainSec)}</span>
           </div>
-        </div>
-        <div class="live-main-info">
           <div class="live-subject-title">
-            ${escapeHtml(currentLesson.subject)} • <span style="font-weight:600; color:var(--accent-primary);">ауд. ${escapeHtml(
+            ${escapeHtml(currentLesson.subject)} <span style="font-weight:600; color:var(--accent-primary);">• ауд. ${escapeHtml(
         currentLesson.room
       )}</span>
           </div>
-          <div class="live-next-hint">
-            ${
-              nextLesson
-                ? `Следующая: <strong>${escapeHtml(nextLesson.subject)}</strong> в ${escapeHtml(
-                    nextLesson.startTime
-                  )} (ауд. ${escapeHtml(nextLesson.room)})`
-                : '🎉 Это последняя пара на сегодня!'
-            }
+          <div class="live-progress-track">
+            <div class="live-progress-fill" style="width:${elapsedPercent}%"></div>
           </div>
         </div>
-        <div class="live-progress-track">
-          <div class="live-progress-fill" style="width:${elapsedPercent}%"></div>
-        </div>
       `;
+      if (subtextEl) {
+        subtextEl.innerHTML = nextLesson
+          ? `Следующая пара: <strong>${escapeHtml(nextLesson.subject)}</strong> в ${escapeHtml(
+              nextLesson.startTime
+            )} (ауд. ${escapeHtml(nextLesson.room)})`
+          : 'Это заключительная пара на сегодня';
+      }
       return;
     }
 
-    // Сценарий Б: Сегодня ещё будет пара (перемена или утро перед первой парой)
+    // 2. Перемена или до начала сегодняшней пары
     if (nextLesson) {
       const waitSec = nextLesson.startSec - nowSec;
       const isBreak = todayLessons[0] && nowSec >= parseTimeToSeconds(todayLessons[0].endTime);
 
-      banner.className = `live-timer-banner ${isBreak ? 'is-break' : ''}`;
       banner.innerHTML = `
-        <div class="live-timer-top">
-          <span class="live-status-pill ${isBreak ? 'break-mode' : 'upcoming'}">
-            <span class="pulse-dot"></span>
-            ${isBreak ? '☕ СЕЙЧАС ПЕРЕМЕНА' : '⏳ СЛЕДУЮЩАЯ ПАРА СЕГОДНЯ'} • ${escapeHtml(
-        nextLesson.pairName
-      )} в ${escapeHtml(nextLesson.startTime)}
-          </span>
-          <div class="live-countdown-box">
-            Начнётся через: ${formatDuration(waitSec)}
-          </div>
-        </div>
-        <div class="live-main-info">
-          <div class="live-subject-title">
-            ${escapeHtml(nextLesson.subject)} (${escapeHtml(nextLesson.trainingType)})
-          </div>
-          <div class="live-next-hint">
-            📍 Идти в аудиторию: <strong>${escapeHtml(nextLesson.room)}</strong> • 👤 ${escapeHtml(
-        nextLesson.teacher
+        <div class="live-timer-inline">
+          <div class="live-timer-top">
+            <span class="live-status-pill ${isBreak ? 'break-mode' : 'upcoming'}">
+              <span class="pulse-dot"></span>
+              ${isBreak ? '☕ ПЕРЕМЕНА' : '⏳ СЕГОДНЯ'} • ${escapeHtml(nextLesson.pairName)} в ${escapeHtml(
+        nextLesson.startTime
       )}
+            </span>
+            <span class="live-countdown-box">Через ${formatDuration(waitSec)}</span>
+          </div>
+          <div class="live-subject-title">
+            ${escapeHtml(nextLesson.subject)} <span style="font-weight:600; color:var(--accent-primary);">• ауд. ${escapeHtml(
+        nextLesson.room
+      )}</span>
           </div>
         </div>
       `;
+      if (subtextEl) {
+        subtextEl.textContent = `${nextLesson.trainingType} • ${nextLesson.teacher}`;
+      }
       return;
     }
 
-    // Сценарий В: На сегодня пары закончились (или выходной) — показываем первую пару завтра
+    // 3. Пары на сегодня завершены
     const tomorrowLessons = appState.lessons
       .filter((l) => Number(l.dayOfWeek) === tomorrowId)
       .sort((a, b) => a.startTime.localeCompare(b.startTime));
     const tomorrowObj = DAYS_OF_WEEK.find((d) => d.id === tomorrowId);
 
-    if (tomorrowLessons.length > 0) {
-      const firstTom = tomorrowLessons[0];
-      banner.className = 'live-timer-banner';
-      banner.innerHTML = `
-        <div class="live-timer-top">
-          <span class="live-status-pill upcoming">
-            🌙 Пары на сегодня завершены • Завтра (${tomorrowObj ? tomorrowObj.name : 'Завтра'}): ${
-        tomorrowLessons.length
-      } ${pluralize(tomorrowLessons.length, 'пара', 'пары', 'пар')}
-          </span>
-          <span class="tag">1-я пара в ${escapeHtml(firstTom.startTime)}</span>
-        </div>
-        <div class="live-main-info">
-          <div class="live-subject-title" style="font-size:0.98rem;">
-            Начинаем завтра с: ${escapeHtml(firstTom.subject)} (${escapeHtml(
-        firstTom.trainingType
-      )})
-          </div>
-          <div class="live-next-hint">
-            📍 Ауд.: <strong>${escapeHtml(firstTom.room)}</strong> • 👤 ${escapeHtml(
-        firstTom.teacher
-      )}
-          </div>
-        </div>
-      `;
-    } else {
-      banner.classList.add('hidden');
+    banner.innerHTML = `
+      <span class="live-headline">
+        Учебная неделя: ${activeDayIds.size} ${pluralize(
+      activeDayIds.size,
+      'день',
+      'дня',
+      'дней'
+    )} (${appState.lessons.length} ${pluralize(appState.lessons.length, 'пара', 'пары', 'пар')})
+      </span>
+    `;
+
+    if (subtextEl) {
+      if (tomorrowLessons.length > 0) {
+        const firstTom = tomorrowLessons[0];
+        subtextEl.innerHTML = `Завтра (${
+          tomorrowObj ? tomorrowObj.short : 'Завтра'
+        }) 1-я пара в <strong>${escapeHtml(firstTom.startTime)}</strong>: ${escapeHtml(
+          firstTom.subject
+        )} (ауд. ${escapeHtml(firstTom.room)})`;
+      } else {
+        subtextEl.textContent = `Активных заданий: ${pendingTasks.length}`;
+      }
     }
   }
 
   function renderAll() {
-    renderHeaderAndHero();
+    renderHeaderAndMetrics();
     renderLiveClassTimer();
     renderSmartAlerts();
     renderScheduleByDays();
@@ -350,14 +328,13 @@
     updateReminderStatusIndicator();
   }
 
-  function renderHeaderAndHero() {
+  function renderHeaderAndMetrics() {
     const { todayId, tomorrowId, now } = getTodayAndTomorrowDays();
 
     const dateFormatter = new Intl.DateTimeFormat('ru-RU', {
       weekday: 'long',
       day: 'numeric',
-      month: 'long',
-      year: 'numeric'
+      month: 'long'
     });
     const formattedDate = dateFormatter.format(now);
     document.getElementById('currentDateDisplay').textContent =
@@ -365,143 +342,78 @@
 
     const badgeEl = document.getElementById('studentBadge');
     if (appState.studentProfile) {
-      const { fullName, groupName, semesterName } = appState.studentProfile;
-      const parts = [fullName, groupName, semesterName].filter(Boolean);
+      const { fullName, groupName } = appState.studentProfile;
+      const parts = [fullName, groupName].filter(Boolean);
       badgeEl.textContent = parts.join(' • ');
     } else {
-      badgeEl.textContent = 'Расписание, НБ и учебные задания';
+      badgeEl.textContent = 'Расписание и задания';
     }
-
-    const activeDayIds = new Set(appState.lessons.map((l) => Number(l.dayOfWeek)));
-    const activeDayNames = DAYS_OF_WEEK.filter((d) => activeDayIds.has(d.id)).map((d) =>
-      d.name.toLowerCase()
-    );
-
-    const headlineEl = document.getElementById('briefingHeadline');
-    const subtextEl = document.getElementById('briefingSubtext');
-    const summaryPillEl = document.getElementById('weekSummaryPill');
 
     const pendingTasks = appState.tasks.filter((t) => !t.completed);
     const completedTasks = appState.tasks.filter((t) => t.completed);
 
-    // Суммарные пропуски НБ
     const totalMissedHours = Object.values(appState.attendance || {}).reduce(
       (acc, r) => acc + (Number(r.missedHours) || 0),
       0
     );
 
-    if (appState.lessons.length === 0) {
-      headlineEl.textContent = 'Добро пожаловать в HEMIS Planner';
-      subtextEl.textContent =
-        'Подключите свой аккаунт HEMIS или загрузите демо-расписание — сайт определит учебные дни, покажет пропуски (НБ) и задания под каждым предметом.';
-      summaryPillEl.textContent = 'Расписание не загружено';
-    } else {
-      headlineEl.textContent = `У вас занятия ${activeDayIds.size} ${pluralize(
-        activeDayIds.size,
-        'день',
-        'дня',
-        'дней'
-      )} в неделю (${appState.lessons.length} ${pluralize(
-        appState.lessons.length,
-        'пара',
-        'пары',
-        'пар'
-      )})`;
-      subtextEl.textContent = `Учебные дни по HEMIS: ${activeDayNames.join(
-        ', '
-      )}. Невыполненных заданий: ${pendingTasks.length} • Всего пропусков (НБ): ${totalMissedHours} ч.`;
-      summaryPillEl.textContent = `${activeDayIds.size} из 6 дней с парами`;
-    }
-
+    // Компактная полоса дней недели (Все | Пн | Вт | Ср | Чт | Пт | Сб)
     const stripEl = document.getElementById('weekDaysStrip');
-    stripEl.innerHTML = DAYS_OF_WEEK.map((day) => {
+    const allPillHtml = `
+      <button type="button" class="day-pill ${activeDayFilter === 'all' ? 'active-filter' : ''}"
+              data-filter-day="all">
+        <span>Все дни</span>
+      </button>
+    `;
+
+    const daysPillsHtml = DAYS_OF_WEEK.map((day) => {
       const dayLessons = appState.lessons.filter((l) => Number(l.dayOfWeek) === day.id);
       const dayPendingTasks = pendingTasks.filter((t) => Number(t.dayOfWeek) === day.id);
       const hasUrgent = dayPendingTasks.some((t) => t.priority === 'urgent');
       const isToday = day.id === todayId;
+      const isSelected = String(activeDayFilter) === String(day.id);
 
       return `
-        <div class="day-pill ${dayLessons.length > 0 ? 'has-classes' : ''} ${
+        <button type="button"
+                class="day-pill ${dayLessons.length > 0 ? 'has-classes' : ''} ${
         isToday ? 'is-today' : ''
-      }"
-             data-jump-day="${day.id}"
-             title="Нажмите, чтобы перейти к дню: ${day.name}">
-          <span class="day-pill-name">${day.short}${isToday ? ' • Сегодня' : ''}</span>
-          <span class="day-pill-status">
-            ${
-              dayLessons.length > 0
-                ? `${dayLessons.length} ${pluralize(dayLessons.length, 'пара', 'пары', 'пар')}`
-                : 'Свободный день'
-            }
-          </span>
+      } ${isSelected ? 'active-filter' : ''}"
+                data-filter-day="${day.id}"
+                title="${day.name}: ${dayLessons.length} пар, ${dayPendingTasks.length} заданий">
+          <span>${day.short}</span>
           ${
             dayPendingTasks.length > 0
-              ? `<span class="day-pill-tasks-badge ${hasUrgent ? 'urgent' : ''}">
-                   ${dayPendingTasks.length} ${pluralize(
-                  dayPendingTasks.length,
-                  'задание',
-                  'задания',
-                  'заданий'
-                )}
-                 </span>`
+              ? `<span class="day-pill-dot ${hasUrgent ? 'urgent' : ''}"></span>`
               : ''
           }
-        </div>
+        </button>
       `;
     }).join('');
 
-    const todayObj = DAYS_OF_WEEK.find((d) => d.id === todayId);
-    const tomorrowObj = DAYS_OF_WEEK.find((d) => d.id === tomorrowId);
+    stripEl.innerHTML = allPillHtml + daysPillsHtml;
 
+    // 3 компактные пилюли метрик
     const todayLessons = appState.lessons.filter((l) => Number(l.dayOfWeek) === todayId);
     const tomorrowLessons = appState.lessons.filter((l) => Number(l.dayOfWeek) === tomorrowId);
-
     const todayPending = pendingTasks.filter((t) => Number(t.dayOfWeek) === todayId);
     const tomorrowPending = pendingTasks.filter((t) => Number(t.dayOfWeek) === tomorrowId);
-    const urgentTotal = pendingTasks.filter(
-      (t) => t.priority === 'urgent' || t.priority === 'high'
-    ).length;
 
-    document.getElementById('todayDayName').textContent = todayObj ? todayObj.name : 'Воскресенье';
     document.getElementById('statTodayClasses').textContent =
       todayLessons.length > 0
         ? `${todayLessons.length} ${pluralize(todayLessons.length, 'пара', 'пары', 'пар')}`
         : 'Выходной';
     document.getElementById('statTodayTasks').textContent =
-      todayPending.length > 0
-        ? `Нужно сдать: ${todayPending.length} ${pluralize(
-            todayPending.length,
-            'задание',
-            'задания',
-            'заданий'
-          )}`
-        : 'Все задания на сегодня закрыты';
+      todayPending.length > 0 ? `${todayPending.length} к сдаче` : 'Без долгов';
 
-    document.getElementById('tomorrowDayName').textContent = tomorrowObj
-      ? tomorrowObj.name
-      : 'Воскресенье';
     document.getElementById('statTomorrowClasses').textContent =
       tomorrowLessons.length > 0
         ? `${tomorrowLessons.length} ${pluralize(tomorrowLessons.length, 'пара', 'пары', 'пар')}`
         : 'Выходной';
     document.getElementById('statTomorrowTasks').textContent =
-      tomorrowPending.length > 0
-        ? `К подготовке: ${tomorrowPending.length} ${pluralize(
-            tomorrowPending.length,
-            'задание',
-            'задания',
-            'заданий'
-          )}`
-        : 'Нет невыполненных заданий на завтра';
+      tomorrowPending.length > 0 ? `${tomorrowPending.length} подгот.` : 'Всё готово';
 
-    document.getElementById('urgentCountBadge').textContent = `${urgentTotal} важных`;
-    document.getElementById('statTotalPending').textContent = `${pendingTasks.length} ${pluralize(
-      pendingTasks.length,
-      'задание',
-      'задания',
-      'заданий'
-    )}`;
-    document.getElementById('statCompletedTotal').textContent = `Выполнено: ${completedTasks.length} • Пропусков: ${totalMissedHours} ч.`;
+    document.getElementById('statTotalPending').textContent = `${totalMissedHours} ч.`;
+    document.getElementById('statCompletedTotal').textContent = `Готово: ${completedTasks.length}`;
     document.getElementById('tabTasksCounter').textContent = String(pendingTasks.length);
   }
 
@@ -529,8 +441,8 @@
       cards.push(`
         <div class="smart-alert-card">
           <div class="smart-alert-header">
-            <span>📌 Задания на сегодня (${todayObj ? todayObj.name : 'Сегодня'})</span>
-            <span class="tag tag-urgent">${todayTasks.length} к сдаче</span>
+            <span>📌 На сегодня (${todayObj ? todayObj.short : 'Сегодня'})</span>
+            <span class="tag tag-urgent">${todayTasks.length}</span>
           </div>
           <ul class="smart-alert-list">
             ${todayTasks
@@ -540,7 +452,7 @@
                 <span><strong>${escapeHtml(t.subject)}:</strong> ${escapeHtml(t.title)}</span>
                 <button class="btn btn-xs btn-ghost" data-quick-complete="${escapeHtml(
                   t.id
-                )}">✓ Готово</button>
+                )}">✓</button>
               </li>
             `
               )
@@ -554,13 +466,8 @@
       cards.push(`
         <div class="smart-alert-card alert-tomorrow">
           <div class="smart-alert-header">
-            <span>⏰ Подготовить на завтра (${tomorrowObj ? tomorrowObj.name : 'Завтра'})</span>
-            <span class="tag tag-high">${tomorrowTasks.length} ${pluralize(
-        tomorrowTasks.length,
-        'задание',
-        'задания',
-        'заданий'
-      )}</span>
+            <span>⏰ На завтра (${tomorrowObj ? tomorrowObj.short : 'Завтра'})</span>
+            <span class="tag tag-high">${tomorrowTasks.length}</span>
           </div>
           <ul class="smart-alert-list">
             ${tomorrowTasks
@@ -570,7 +477,7 @@
                 <span><strong>${escapeHtml(t.subject)}:</strong> ${escapeHtml(t.title)}</span>
                 <button class="btn btn-xs btn-ghost" data-quick-complete="${escapeHtml(
                   t.id
-                )}">✓ Готово</button>
+                )}">✓</button>
               </li>
             `
               )
@@ -594,33 +501,34 @@
     }
     emptyBanner.classList.add('hidden');
 
-    const onlyDaysWithClasses = document.getElementById('chkOnlyDaysWithClasses').checked;
     const hideCompletedInline = document.getElementById('chkHideCompletedInline').checked;
-    const dayFilter = document.getElementById('dayFilterSelect').value;
     const { todayId, tomorrowId } = getTodayAndTomorrowDays();
 
     const daysToRender = DAYS_OF_WEEK.filter((day) => {
-      if (dayFilter !== 'all' && Number(dayFilter) !== day.id) return false;
-      if (onlyDaysWithClasses) {
-        const hasClasses = appState.lessons.some((l) => Number(l.dayOfWeek) === day.id);
-        const hasTasks = appState.tasks.some((t) => Number(t.dayOfWeek) === day.id);
-        return hasClasses || hasTasks;
+      if (activeDayFilter !== 'all') {
+        return Number(activeDayFilter) === day.id;
       }
-      return true;
+      const hasClasses = appState.lessons.some((l) => Number(l.dayOfWeek) === day.id);
+      const hasTasks = appState.tasks.some((t) => Number(t.dayOfWeek) === day.id);
+      return hasClasses || hasTasks;
     });
 
     if (daysToRender.length === 0) {
+      const selectedDayObj = DAYS_OF_WEEK.find((d) => d.id === Number(activeDayFilter));
       gridEl.innerHTML = `
-        <div class="empty-state">
-          <h2>Нет пар по выбранному фильтру</h2>
-          <p>Отключите фильтр «Только дни с парами» или выберите другой день недели.</p>
+        <div class="empty-state" style="grid-column: 1 / -1;">
+          <h2>${selectedDayObj ? selectedDayObj.name : 'День'} — свободный от пар день</h2>
+          <p>В этот день нет занятий по расписанию HEMIS.</p>
+          <div class="empty-actions">
+            <button class="btn btn-secondary btn-sm" data-filter-day="all">Показать все учебные дни</button>
+          </div>
         </div>
       `;
       return;
     }
 
     gridEl.innerHTML = daysToRender
-      .map((day) => {
+      .map((day, cardIdx) => {
         const dayLessons = appState.lessons
           .filter((l) => Number(l.dayOfWeek) === day.id)
           .sort((a, b) => a.startTime.localeCompare(b.startTime));
@@ -630,7 +538,6 @@
 
         const isToday = day.id === todayId;
         const isTomorrow = day.id === tomorrowId;
-
         const renderedSubjectsInDay = new Set();
 
         const lessonsHtml = dayLessons
@@ -643,7 +550,6 @@
               return t.subject.toLowerCase().trim() === subjKey;
             });
 
-            // Информация о посещаемости (НБ) по этому предмету
             const nb = getSubjectAttendance(lesson.subject);
             const nbBadgeClass =
               nb.status === 'danger'
@@ -651,7 +557,6 @@
                 : nb.status === 'warn'
                 ? 'nb-warn'
                 : 'nb-safe';
-            const nbIcon = nb.status === 'danger' ? '🚨' : nb.status === 'warn' ? '⚠️' : '📊';
 
             const isLive = lesson.id === lastLiveLessonId;
 
@@ -662,13 +567,20 @@
                 <div class="lesson-main">
                   <div class="lesson-top-row">
                     <span class="lesson-time-badge">
-                      🕒 ${escapeHtml(lesson.pairName)} • ${escapeHtml(
-              lesson.startTime
-            )}–${escapeHtml(lesson.endTime)}
+                      ${escapeHtml(lesson.startTime)}–${escapeHtml(lesson.endTime)} • ${escapeHtml(
+              lesson.pairName
+            )}
                     </span>
-                    <div style="display:flex; align-items:center; gap:0.4rem;">
+                    <div class="lesson-badges-right">
+                      <span class="nb-badge ${nbBadgeClass}"
+                            data-open-nb-tab="true"
+                            title="Пропуски НБ: ${nb.missedHours} из ${
+              nb.limitHours
+            } ч. Нажмите для управления">
+                        НБ: ${nb.missedHours}/${nb.limitHours} ч.
+                      </span>
                       <span class="lesson-type-badge">${escapeHtml(lesson.trainingType)}</span>
-                      <button class="btn-micro" title="Удалить пару из расписания" data-delete-lesson="${escapeHtml(
+                      <button class="btn-micro" title="Удалить пару" data-delete-lesson="${escapeHtml(
                         lesson.id
                       )}">✕</button>
                     </div>
@@ -678,25 +590,8 @@
 
                   <div class="lesson-details-row">
                     <div class="lesson-meta-spans">
-                      <span>📍 Ауд.: <strong>${escapeHtml(lesson.room)}</strong></span>
+                      <span>📍 ауд. <strong>${escapeHtml(lesson.room)}</strong></span>
                       <span>👤 ${escapeHtml(lesson.teacher)}</span>
-                    </div>
-                  </div>
-
-                  <!-- Строка контроля пропусков (НБ / Davomat) прямо на карточке предмета -->
-                  <div class="nb-inline-row">
-                    <span class="nb-badge ${nbBadgeClass}" title="Лимит 25% от ${
-              nb.totalHours
-            } ч. = ${nb.limitHours} ч.">
-                      ${nbIcon} НБ: ${nb.missedHours} / ${nb.limitHours} ч. (${nb.percent}%)
-                    </span>
-                    <div class="nb-controls">
-                      <button type="button" class="btn-nb-step" data-nb-delta="-2" data-nb-subject="${escapeHtml(
-                        lesson.subject
-                      )}" title="Убавить 2 часа НБ">−2 ч</button>
-                      <button type="button" class="btn-nb-step" data-nb-delta="2" data-nb-subject="${escapeHtml(
-                        lesson.subject
-                      )}" title="Добавить 2 часа НБ (1 пара)">+2 ч НБ</button>
                     </div>
                   </div>
                 </div>
@@ -705,14 +600,16 @@
                 <div class="lesson-tasks-container">
                   <div class="lesson-tasks-header">
                     <span class="lesson-tasks-title">
-                      📝 Задания по предмету на ${day.name.toLowerCase()} (${
-              matchingTasks.filter((t) => !t.completed).length
-            })
+                      ${
+                        matchingTasks.length > 0
+                          ? `Задания (${matchingTasks.filter((t) => !t.completed).length})`
+                          : 'Нет заданий к паре'
+                      }
                     </span>
-                    <button class="btn btn-xs btn-secondary"
+                    <button class="btn btn-xs btn-ghost"
                             data-add-task-subject="${escapeHtml(lesson.subject)}"
                             data-add-task-day="${day.id}">
-                      + Добавить задание
+                      + Задание
                     </button>
                   </div>
 
@@ -721,7 +618,7 @@
                       ? `<div class="inline-tasks-list">
                           ${matchingTasks.map((task) => renderInlineTaskItem(task)).join('')}
                          </div>`
-                      : `<div class="no-tasks-inline">Нет записанных заданий к этой паре. Нажмите «+ Добавить задание», чтобы записать ДЗ или СРС.</div>`
+                      : ''
                   }
                 </div>
               </article>
@@ -740,7 +637,7 @@
               <article class="lesson-item">
                 <div class="lesson-tasks-container" style="border-top:none;">
                   <div class="lesson-tasks-header">
-                    <span class="lesson-tasks-title">📌 Дополнительные задания на ${day.name.toLowerCase()}</span>
+                    <span class="lesson-tasks-title">Дополнительные задания</span>
                   </div>
                   <div class="inline-tasks-list">
                     ${extraTasks.map((task) => renderInlineTaskItem(task, true)).join('')}
@@ -751,7 +648,9 @@
             : '';
 
         return `
-          <div class="day-card ${isToday ? 'today-highlight' : ''}" id="dayCard_${day.id}">
+          <div class="day-card ${isToday ? 'today-highlight' : ''}"
+               id="dayCard_${day.id}"
+               style="animation-delay: ${cardIdx * 55}ms">
             <div class="day-card-header">
               <div class="day-card-title">
                 <span>${day.name}</span>
@@ -759,8 +658,8 @@
                 ${isTomorrow ? '<span class="tomorrow-tag">Завтра</span>' : ''}
               </div>
               <div class="day-card-meta">
-                ${dayLessons.length} ${pluralize(dayLessons.length, 'пара', 'пары', 'пар')} •
-                ${dayPendingCount} ${pluralize(dayPendingCount, 'задание', 'задания', 'заданий')}
+                ${dayLessons.length} ${pluralize(dayLessons.length, 'пара', 'пары', 'пар')}
+                ${dayPendingCount > 0 ? ` • ${dayPendingCount} зад.` : ''}
               </div>
             </div>
 
@@ -768,8 +667,8 @@
               ${
                 dayLessons.length > 0
                   ? lessonsHtml
-                  : `<div class="no-tasks-inline" style="text-align:center; padding:0.75rem;">
-                       В этот день нет пар по расписанию HEMIS.
+                  : `<div class="inline-task-sub" style="text-align:center; padding:0.65rem;">
+                       Свободный от пар день
                      </div>`
               }
               ${extraTasksHtml}
@@ -780,9 +679,6 @@
       .join('');
   }
 
-  /**
-   * Рендеринг задания с поддержкой кликабельной ссылки и интерактивного чек-листа (подзадач)
-   */
   function renderInlineTaskItem(task, showSubjectName = false) {
     const priorityClass =
       task.priority === 'urgent'
@@ -799,16 +695,15 @@
         : '';
 
     const subDetails = [
-      showSubjectName ? `Предмет: ${task.subject}` : null,
+      showSubjectName ? task.subject : null,
       task.type || null,
-      task.deadline ? `Дедлайн: ${task.deadline}` : null,
+      task.deadline ? `до ${task.deadline}` : null,
       task.notes ? task.notes : null
     ].filter(Boolean);
 
-    // Ссылка (Google Docs, GitHub, Canva и т.д.)
     let linkHtml = '';
     if (task.link) {
-      let hostLabel = 'Открыть ссылку';
+      let hostLabel = 'Ссылка';
       try {
         hostLabel = new URL(task.link).hostname.replace(/^www\./, '');
       } catch (_) {}
@@ -819,7 +714,6 @@
       `;
     }
 
-    // Чек-лист подзадач
     let subtasksHtml = '';
     if (Array.isArray(task.subtasks) && task.subtasks.length > 0) {
       const doneCount = task.subtasks.filter((s) => s.done).length;
@@ -829,7 +723,7 @@
       subtasksHtml = `
         <div class="inline-subtasks-box">
           <div class="subtasks-progress-header">
-            <span>Чек-лист: ${doneCount}/${totalCount} шагов</span>
+            <span>Шаги: ${doneCount}/${totalCount}</span>
             <span>${pct}%</span>
           </div>
           <div class="subtask-mini-bar">
@@ -859,8 +753,8 @@
                  class="task-checkbox"
                  data-toggle-task="${escapeHtml(task.id)}"
                  ${task.completed ? 'checked' : ''}
-                 aria-label="Отметить выполнение задания" />
-          <div class="inline-task-content" style="width:100%;">
+                 aria-label="Отметить выполнение" />
+          <div class="inline-task-content">
             <div class="inline-task-text">
               ${escapeHtml(task.title)} ${priorityBadge}
             </div>
@@ -874,12 +768,12 @@
           </div>
         </div>
         <div class="inline-task-actions">
-          <button class="btn-micro" title="Редактировать" data-edit-task="${escapeHtml(
+          <button class="btn-micro" title="Изменить" data-edit-task="${escapeHtml(
             task.id
           )}">✎</button>
-          <button class="btn-micro" title="Удалить задание" data-delete-task="${escapeHtml(
+          <button class="btn-micro" title="Удалить" data-delete-task="${escapeHtml(
             task.id
-          )}">🗑</button>
+          )}">✕</button>
         </div>
       </div>
     `;
@@ -910,8 +804,8 @@
     if (filtered.length === 0) {
       container.innerHTML = `
         <div class="empty-state">
-          <h2>Заданий не найдено</h2>
-          <p>Добавьте новое задание прямо под парой в расписании или кнопкой «+ Добавить задание».</p>
+          <h2>Список заданий пуст</h2>
+          <p>Добавьте задание прямо под нужным предметом в расписании или нажмите «+ Задание».</p>
         </div>
       `;
       return;
@@ -933,22 +827,20 @@
                      data-toggle-task="${escapeHtml(task.id)}"
                      ${task.completed ? 'checked' : ''} />
               <div style="flex:1;">
-                <div class="inline-task-text" style="font-size:0.96rem;">
+                <div class="inline-task-text" style="font-size:0.92rem;">
                   ${escapeHtml(task.title)}
                 </div>
                 <div class="full-task-meta">
                   <span class="tag tag-subject">${escapeHtml(task.subject)}</span>
-                  <span class="tag">📅 ${dayObj ? dayObj.name : 'Любой день'}</span>
+                  <span class="tag">${dayObj ? dayObj.name : 'Любой день'}</span>
                   ${task.type ? `<span class="tag">${escapeHtml(task.type)}</span>` : ''}
                   ${
                     subtasksCount > 0
-                      ? `<span class="tag">☑️ Шаги: ${subtasksDone}/${subtasksCount}</span>`
+                      ? `<span class="tag">☑️ ${subtasksDone}/${subtasksCount}</span>`
                       : ''
                   }
                   ${
-                    task.deadline
-                      ? `<span class="tag">⏳ до ${escapeHtml(task.deadline)}</span>`
-                      : ''
+                    task.deadline ? `<span class="tag">до ${escapeHtml(task.deadline)}</span>` : ''
                   }
                   ${
                     task.priority === 'urgent'
@@ -956,12 +848,12 @@
                       : ''
                   }
                   ${
-                    task.priority === 'high' ? '<span class="tag tag-high">Важное</span>' : ''
+                    task.priority === 'high' ? '<span class="tag tag-high">Важно</span>' : ''
                   }
                 </div>
                 ${
                   task.notes
-                    ? `<div class="inline-task-sub" style="margin-top:0.35rem;">${escapeHtml(
+                    ? `<div class="inline-task-sub" style="margin-top:0.3rem;">${escapeHtml(
                         task.notes
                       )}</div>`
                     : ''
@@ -970,18 +862,18 @@
                   task.link
                     ? `<a href="${escapeHtml(
                         task.link
-                      )}" target="_blank" rel="noopener noreferrer" class="task-link-pill">🔗 Открыть прикреплённую ссылку ↗</a>`
+                      )}" target="_blank" rel="noopener noreferrer" class="task-link-pill">🔗 Открыть ссылку ↗</a>`
                     : ''
                 }
               </div>
             </div>
-            <div class="inline-task-actions">
+            <div class="inline-task-actions" style="opacity:1;">
               <button class="btn btn-xs btn-ghost" data-edit-task="${escapeHtml(
                 task.id
-              )}">Изменить</button>
+              )}">✎</button>
               <button class="btn btn-xs btn-ghost" data-delete-task="${escapeHtml(
                 task.id
-              )}">Удалить</button>
+              )}">✕</button>
             </div>
           </div>
         `;
@@ -989,9 +881,6 @@
       .join('');
   }
 
-  /**
-   * Вкладка 3: Контроль посещаемости («НБ» / Davomat) и анализ предметов
-   */
   function renderSubjectsAnalyticsTab() {
     const grid = document.getElementById('subjectsAnalyticsGrid');
     const summaryBanner = document.getElementById('attendanceSummaryBanner');
@@ -1033,9 +922,9 @@
     if (subjects.length === 0) {
       summaryBanner.innerHTML = '';
       grid.innerHTML = `
-        <div class="empty-state">
-          <h2>Нет данных о предметах и посещаемости</h2>
-          <p>Подключите расписание HEMIS, чтобы контролировать лимит пропусков («НБ») по каждому предмету.</p>
+        <div class="empty-state" style="grid-column: 1 / -1;">
+          <h2>Нет данных о предметах</h2>
+          <p>Подключите расписание HEMIS, чтобы контролировать часы пропусков («НБ»).</p>
         </div>
       `;
       return;
@@ -1059,32 +948,31 @@
 
     summaryBanner.innerHTML = `
       <div>
-        <h3 style="font-size:1rem; font-weight:700;">📊 Контроль посещаемости («НБ» / Davomat)</h3>
+        <h3 style="font-size:0.95rem; font-weight:700;">Контроль пропусков («НБ» / Davomat)</h3>
         <p class="inline-task-sub">
-          По правилам HEMIS допустимый порог пропусков — <strong>25% от общей часовой нагрузки предмета</strong> (например, 15 часов из 60). Вы можете корректировать часы кнопками <code>−2 ч</code> / <code>+2 ч</code>.
+          Допустимый лимит — 25% от общей нагрузки предмета. Вы можете менять часы кнопками <code>−2 ч</code> / <code>+2 ч</code>.
         </p>
       </div>
-      <div style="display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
-        <span class="tag">Всего пропущено: <strong>${totalMissedAll} ч.</strong></span>
+      <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+        <span class="tag">Всего пропусков: <strong>${totalMissedAll} ч.</strong></span>
         ${
           warningSubjectsCount > 0
-            ? `<span class="tag tag-urgent">⚠️ В зоне риска: ${warningSubjectsCount} предм.</span>`
-            : `<span class="tag" style="color:var(--emerald);">✓ Все предметы в пределах нормы</span>`
+            ? `<span class="tag tag-urgent">Риск по ${warningSubjectsCount} предм.</span>`
+            : `<span class="tag" style="color:var(--emerald);">Все предметы в норме</span>`
         }
       </div>
     `;
 
     grid.innerHTML = subjects
-      .map((subj) => {
+      .map((subj, idx) => {
         const subjTasks = appState.tasks.filter(
           (t) => t.subject.toLowerCase().trim() === subj.name.toLowerCase()
         );
         const pendingCount = subjTasks.filter((t) => !t.completed).length;
-        const completedCount = subjTasks.filter((t) => t.completed).length;
 
         const dayNames = Array.from(subj.days)
           .sort((a, b) => a - b)
-          .map((dId) => DAYS_OF_WEEK.find((d) => d.id === dId)?.name || '—');
+          .map((dId) => DAYS_OF_WEEK.find((d) => d.id === dId)?.short || '—');
 
         const firstDay = Array.from(subj.days)[0] || 1;
         const nb = getSubjectAttendance(subj.name);
@@ -1093,19 +981,18 @@
         const remainHours = Math.max(0, nb.limitHours - nb.missedHours);
 
         return `
-          <div class="subject-card">
+          <div class="subject-card" style="animation-delay: ${idx * 45}ms">
             <div>
               <h3 class="subject-card-title">${escapeHtml(subj.name)}</h3>
-              <div class="inline-task-sub" style="margin-top:0.2rem;">
-                ${Array.from(subj.teachers).join(', ') || 'Преподаватель не указан'}
+              <div class="inline-task-sub">
+                ${Array.from(subj.teachers).join(', ') || 'Преподаватель'}
               </div>
             </div>
 
-            <!-- Блок контроля НБ по предмету -->
-            <div style="background:var(--bg-surface-elevated); padding:0.75rem; border-radius:8px; border:1px solid var(--border-color);">
-              <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+            <div style="background:var(--bg-surface-elevated); padding:0.7rem; border-radius:8px; border:1px solid var(--border-color);">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
                 <span class="nb-badge ${nbBadgeClass}">
-                  Пропущено: ${nb.missedHours} ч. из ${nb.limitHours} ч. (${nb.percent}%)
+                  НБ: ${nb.missedHours} / ${nb.limitHours} ч. (${nb.percent}%)
                 </span>
                 <span class="inline-task-sub">Запас: <strong>${remainHours} ч.</strong></span>
               </div>
@@ -1114,21 +1001,18 @@
                 <div class="nb-progress-fill ${nb.status}" style="width:${nb.percent}%"></div>
               </div>
 
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.55rem; gap:0.5rem; flex-wrap:wrap;">
-                <div style="display:flex; align-items:center; gap:0.35rem; font-size:0.75rem; color:var(--text-secondary);">
-                  <span>Всего часов:</span>
-                  <select class="input-select" style="padding:0.15rem 0.4rem; font-size:0.74rem; width:auto;"
-                          data-subject-hours="${escapeHtml(subj.name)}">
-                    ${[30, 45, 60, 75, 90, 120, 150]
-                      .map(
-                        (h) =>
-                          `<option value="${h}" ${
-                            nb.totalHours === h ? 'selected' : ''
-                          }>${h} ч. (лимит ${Math.floor(h * 0.25)} ч.)</option>`
-                      )
-                      .join('')}
-                  </select>
-                </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.55rem; gap:0.4rem;">
+                <select class="input-select" style="padding:0.15rem 0.45rem; font-size:0.72rem; width:auto;"
+                        data-subject-hours="${escapeHtml(subj.name)}">
+                  ${[30, 45, 60, 75, 90, 120, 150]
+                    .map(
+                      (h) =>
+                        `<option value="${h}" ${
+                          nb.totalHours === h ? 'selected' : ''
+                        }>Нагрузка ${h} ч. (лимит ${Math.floor(h * 0.25)} ч.)</option>`
+                    )
+                    .join('')}
+                </select>
 
                 <div class="nb-controls">
                   <button type="button" class="btn-nb-step" data-nb-delta="-2" data-nb-subject="${escapeHtml(
@@ -1136,28 +1020,17 @@
                   )}">−2 ч</button>
                   <button type="button" class="btn-nb-step" data-nb-delta="2" data-nb-subject="${escapeHtml(
                     subj.name
-                  )}">+2 ч НБ</button>
+                  )}">+2 ч</button>
                 </div>
               </div>
             </div>
 
-            <div class="subject-days-badges">
-              ${dayNames
-                .map((dName) => `<span class="tag tag-subject">📅 ${escapeHtml(dName)}</span>`)
-                .join('')}
-              <span class="tag">${subj.lessonsCount} ${pluralize(
-          subj.lessonsCount,
-          'пара',
-          'пары',
-          'пар'
-        )} в неделю</span>
-            </div>
-
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:auto; padding-top:0.5rem; border-top:1px solid var(--border-color);">
-              <span class="inline-task-sub">
-                Активных заданий: <strong>${pendingCount}</strong> (выполнено: ${completedCount})
-              </span>
-              <button class="btn btn-xs btn-primary"
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:auto;">
+              <div class="subject-days-badges">
+                <span class="tag tag-subject">${escapeHtml(dayNames.join(', '))}</span>
+                <span class="tag">Заданий: ${pendingCount}</span>
+              </div>
+              <button class="btn btn-xs btn-ghost"
                       data-add-task-subject="${escapeHtml(subj.name)}"
                       data-add-task-day="${firstDay}">
                 + Задание
@@ -1183,7 +1056,7 @@
     if (taskSelect) {
       const prevVal = taskSelect.value;
       if (uniqueSubjects.length === 0) {
-        taskSelect.innerHTML = `<option value="Общее задание">Общее задание (добавьте предмет)</option>`;
+        taskSelect.innerHTML = `<option value="Общее задание">Общее задание</option>`;
       } else {
         taskSelect.innerHTML = uniqueSubjects
           .map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`)
@@ -1221,7 +1094,7 @@
           <span>${idx + 1}. ${escapeHtml(sub.text)}</span>
           <button type="button" class="btn-micro" data-remove-editor-subtask="${escapeHtml(
             sub.id
-          )}" title="Удалить шаг">✕</button>
+          )}">✕</button>
         </li>
       `
       )
@@ -1263,7 +1136,7 @@
         ? editTask.subtasks.map((s) => ({ ...s }))
         : [];
     } else {
-      titleEl.textContent = 'Новое задание по предмету';
+      titleEl.textContent = 'Новое задание';
       editIdInput.value = '';
       if (subject) {
         const exists = Array.from(subjectSelect.options).some((opt) => opt.value === subject);
@@ -1295,6 +1168,7 @@
     const subjectSelect = document.getElementById('taskSubjectSelect');
     const customInput = document.getElementById('taskCustomSubjectInput');
     const hintEl = document.getElementById('taskDayMatchHint');
+    if (!hintEl) return;
     const selectedSubject = !customInput.classList.contains('hidden')
       ? customInput.value.trim()
       : subjectSelect.value;
@@ -1309,17 +1183,14 @@
 
     if (subjectDays.length > 0) {
       const names = subjectDays
-        .map((id) => DAYS_OF_WEEK.find((d) => d.id === id)?.name)
+        .map((id) => DAYS_OF_WEEK.find((d) => d.id === id)?.short)
         .filter(Boolean);
-      hintEl.textContent = `В расписании HEMIS этот предмет идёт в: ${names.join(', ')}.`;
+      hintEl.textContent = `Дни этого предмета: ${names.join(', ')}`;
     } else {
-      hintEl.textContent = 'Задание появится в карточке выбранного дня недели.';
+      hintEl.textContent = '';
     }
   }
 
-  /**
-   * 4. 📱 Вечерние уведомления (Web Notifications API) и PWA
-   */
   function buildEveningSummaryMessage() {
     const { tomorrowId } = getTodayAndTomorrowDays();
     const tomorrowObj = DAYS_OF_WEEK.find((d) => d.id === tomorrowId);
@@ -1341,10 +1212,7 @@
 
     const tasksPart =
       tomorrowTasks.length > 0
-        ? `Невыполненных заданий к завтрашним парам: ${tomorrowTasks.length} (${tomorrowTasks
-            .map((t) => t.title)
-            .slice(0, 2)
-            .join(', ')}).`
+        ? `Невыполненных заданий: ${tomorrowTasks.length}.`
         : 'Все задания на завтра выполнены!';
 
     return `${classesPart} ${tasksPart}`;
@@ -1397,13 +1265,18 @@
       reminderSettings.lastNotifiedDate = todayIso;
       saveReminderSettings(reminderSettings);
       const body = buildEveningSummaryMessage();
-      triggerBrowserNotification('🎓 HEMIS Planner — Сводка на завтра', body);
+      triggerBrowserNotification('🎓 HEMIS Planner — На завтра', body);
     }
   }
 
   function initPwaAndServiceWorker() {
     if ('serviceWorker' in navigator && /^https?:$/i.test(window.location.protocol)) {
-      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      navigator.serviceWorker
+        .register('./sw.js?v=4')
+        .then((reg) => {
+          reg.update();
+        })
+        .catch(() => {});
     }
 
     window.addEventListener('beforeinstallprompt', (e) => {
@@ -1425,6 +1298,28 @@
     }
   }
 
+  function switchTab(tabName) {
+    document.querySelectorAll('.tab-btn').forEach((b) => {
+      const isMatch = b.dataset.tab === tabName;
+      b.classList.toggle('active', isMatch);
+      b.setAttribute('aria-selected', isMatch ? 'true' : 'false');
+    });
+
+    document
+      .getElementById('tabContentSchedule')
+      .classList.toggle('hidden', tabName !== 'schedule');
+    document.getElementById('tabContentTasks').classList.toggle('hidden', tabName !== 'tasks');
+    document
+      .getElementById('tabContentSubjects')
+      .classList.toggle('hidden', tabName !== 'subjects');
+    document
+      .getElementById('weekDaysStrip')
+      .classList.toggle('hidden', tabName !== 'schedule');
+    document
+      .getElementById('scheduleFilters')
+      .classList.toggle('hidden', tabName !== 'schedule');
+  }
+
   function pluralize(count, one, few, many) {
     const mod10 = count % 10;
     const mod100 = count % 100;
@@ -1436,24 +1331,7 @@
   function initEventListeners() {
     document.querySelectorAll('.tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.tab-btn').forEach((b) => {
-          b.classList.remove('active');
-          b.setAttribute('aria-selected', 'false');
-        });
-        btn.classList.add('active');
-        btn.setAttribute('aria-selected', 'true');
-
-        const tabName = btn.dataset.tab;
-        document
-          .getElementById('tabContentSchedule')
-          .classList.toggle('hidden', tabName !== 'schedule');
-        document.getElementById('tabContentTasks').classList.toggle('hidden', tabName !== 'tasks');
-        document
-          .getElementById('tabContentSubjects')
-          .classList.toggle('hidden', tabName !== 'subjects');
-        document
-          .getElementById('scheduleFilters')
-          .classList.toggle('hidden', tabName !== 'schedule');
+        switchTab(btn.dataset.tab);
       });
     });
 
@@ -1467,12 +1345,8 @@
     });
 
     document
-      .getElementById('chkOnlyDaysWithClasses')
-      .addEventListener('change', renderScheduleByDays);
-    document
       .getElementById('chkHideCompletedInline')
       .addEventListener('change', renderScheduleByDays);
-    document.getElementById('dayFilterSelect').addEventListener('change', renderScheduleByDays);
 
     document.getElementById('taskSearchInput').addEventListener('input', renderAllTasksTab);
     document.getElementById('taskSubjectFilter').addEventListener('change', renderAllTasksTab);
@@ -1500,7 +1374,6 @@
       if (hemisConfig.token) {
         document.getElementById('hemisTokenInput').value = hemisConfig.token;
       }
-      document.getElementById('hemisUseCorsProxy').checked = hemisConfig.useCorsProxy !== false;
       modal.classList.remove('hidden');
     };
 
@@ -1538,9 +1411,10 @@
       if (appState.tasks.length === 0) {
         appState.tasks = demo.sampleTasks;
       }
+      activeDayFilter = 'all';
       persistState();
       document.getElementById('modalHemis').classList.add('hidden');
-      showToast('Загружено демо-расписание, данные НБ и примеры заданий с чек-листами!');
+      showToast('Загружены демо-данные!');
     };
 
     document.getElementById('btnLoadDemoSchedule').addEventListener('click', loadDemoHandler);
@@ -1556,11 +1430,9 @@
         uniSelectVal === 'custom'
           ? document.getElementById('hemisCustomUrl').value.trim()
           : uniSelectVal;
-      const useCorsProxy = document.getElementById('hemisUseCorsProxy').checked;
 
       statusBox.className = 'alert-box info';
-      statusBox.textContent =
-        'Подключаемся к HEMIS, анализируем расписание и загружаем статистику пропусков (НБ)...';
+      statusBox.textContent = 'Загружаем расписание и пропуски (НБ) из HEMIS...';
       statusBox.classList.remove('hidden');
       submitBtn.disabled = true;
 
@@ -1572,39 +1444,39 @@
           const lessons = normalizeHemisSchedulePayload(parsedJson);
           appState.lessons = lessons;
           appState.studentProfile = {
-            fullName: 'Импорт из JSON HEMIS',
+            fullName: 'Импорт JSON',
             groupName: '',
             semesterName: '',
             university: baseUrl
           };
           persistState();
           document.getElementById('modalHemis').classList.add('hidden');
-          showToast(`Успешно импортировано пар: ${lessons.length}`);
+          showToast(`Загружено пар: ${lessons.length}`);
         } else {
           let token = '';
           if (currentHemisMode === 'credentials') {
             const login = document.getElementById('hemisLoginInput').value.trim();
             const password = document.getElementById('hemisPasswordInput').value;
             if (!login || !password) {
-              throw new Error('Введите логин (ID студента) и пароль от HEMIS.');
+              throw new Error('Введите логин и пароль от HEMIS.');
             }
-            token = await loginToHemis(baseUrl, login, password, useCorsProxy);
-            hemisConfig = { baseUrl, login, token, useCorsProxy };
+            token = await loginToHemis(baseUrl, login, password, true);
+            hemisConfig = { baseUrl, login, token, useCorsProxy: true };
             saveHemisAuthConfig(hemisConfig);
           } else {
             token = document.getElementById('hemisTokenInput').value.trim();
-            if (!token) throw new Error('Введите ваш Bearer токен от HEMIS.');
-            hemisConfig = { baseUrl, login: hemisConfig.login || '', token, useCorsProxy };
+            if (!token) throw new Error('Введите Bearer токен.');
+            hemisConfig = { baseUrl, login: hemisConfig.login || '', token, useCorsProxy: true };
             saveHemisAuthConfig(hemisConfig);
           }
 
           const { studentProfile, lessons, attendance } = await fetchScheduleWithToken(
             baseUrl,
             token,
-            useCorsProxy
+            true
           );
           appState.studentProfile = studentProfile || {
-            fullName: hemisConfig.login || 'Студент HEMIS',
+            fullName: hemisConfig.login || 'Студент',
             groupName: '',
             semesterName: '',
             university: baseUrl
@@ -1615,7 +1487,7 @@
           }
           persistState();
           document.getElementById('modalHemis').classList.add('hidden');
-          showToast(`Расписание и посещаемость HEMIS загружены (${lessons.length} пар)!`);
+          showToast(`Расписание обновлено (${lessons.length} пар)!`);
         }
       } catch (err) {
         statusBox.className = 'alert-box error';
@@ -1631,11 +1503,11 @@
         return;
       }
       try {
-        showToast('Обновляем расписание и НБ из HEMIS...');
+        showToast('Обновляем данные из HEMIS...');
         const { studentProfile, lessons, attendance } = await fetchScheduleWithToken(
           hemisConfig.baseUrl,
           hemisConfig.token,
-          hemisConfig.useCorsProxy
+          true
         );
         if (studentProfile) appState.studentProfile = studentProfile;
         appState.lessons = lessons;
@@ -1643,9 +1515,8 @@
           appState.attendance = attendance;
         }
         persistState();
-        showToast('Расписание и статистика НБ обновлены!');
+        showToast('Расписание и НБ обновлены!');
       } catch (err) {
-        showToast(`Не удалось обновить автоматически: ${err.message}`);
         openHemisModal();
       }
     });
@@ -1665,9 +1536,7 @@
       const isCustomHidden = customEl.classList.contains('hidden');
       customEl.classList.toggle('hidden', !isCustomHidden);
       selectEl.classList.toggle('hidden', isCustomHidden);
-      if (isCustomHidden) {
-        customEl.focus();
-      }
+      if (isCustomHidden) customEl.focus();
     });
 
     document.getElementById('taskSubjectSelect').addEventListener('change', (e) => {
@@ -1681,7 +1550,6 @@
       }
     });
 
-    // Добавление шага в чек-лист внутри модального окна задания
     const addSubtaskFromInput = () => {
       const input = document.getElementById('newSubtaskInput');
       const text = input.value.trim();
@@ -1704,14 +1572,12 @@
       }
     });
 
-    // Сохранение задания (включая ссылку и чек-лист подзадач)
     document.getElementById('taskForm').addEventListener('submit', (e) => {
       e.preventDefault();
       const editId = document.getElementById('taskEditId').value;
       const selectEl = document.getElementById('taskSubjectSelect');
       const customEl = document.getElementById('taskCustomSubjectInput');
 
-      // Если пользователь ввёл шаг чек-листа в поле, но не нажал "+", добавим его тоже
       const pendingSubText = document.getElementById('newSubtaskInput').value.trim();
       if (pendingSubText) {
         editingSubtasks.push({
@@ -1752,7 +1618,7 @@
             subtasks: editingSubtasks
           };
         }
-        showToast('Задание обновлено!');
+        showToast('Задание обновлено');
       } else {
         appState.tasks.unshift({
           id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -1768,14 +1634,13 @@
           completed: false,
           createdAt: Date.now()
         });
-        showToast('Задание добавлено к предмету!');
+        showToast('Задание добавлено');
       }
 
       document.getElementById('modalTask').classList.add('hidden');
       persistState();
     });
 
-    // Модальное окно Вечерних Напоминаний и PWA
     document.getElementById('btnOpenReminders').addEventListener('click', () => {
       reminderSettings = loadReminderSettings();
       document.getElementById('chkEnableEveningReminders').checked = Boolean(
@@ -1794,24 +1659,16 @@
         await Notification.requestPermission();
       }
 
-      reminderSettings = {
-        ...reminderSettings,
-        enabled,
-        time
-      };
+      reminderSettings = { ...reminderSettings, enabled, time };
       saveReminderSettings(reminderSettings);
       updateReminderStatusIndicator();
       document.getElementById('modalReminders').classList.add('hidden');
-      showToast(
-        enabled
-          ? `Вечерние напоминания включены на ${time}!`
-          : 'Вечерние напоминания отключены'
-      );
+      showToast(enabled ? `Напоминания включены на ${time}` : 'Напоминания выключены');
     });
 
     document.getElementById('btnTestNotification').addEventListener('click', async () => {
       const summary = buildEveningSummaryMessage();
-      await triggerBrowserNotification('🎓 HEMIS Planner — Проверка напоминания', summary);
+      await triggerBrowserNotification('🎓 HEMIS Planner', summary);
       showToast(summary);
     });
 
@@ -1847,12 +1704,11 @@
 
       document.getElementById('modalManualLesson').classList.add('hidden');
       persistState();
-      showToast(`Пара «${subject}» добавлена в расписание!`);
+      showToast(`Пара «${subject}» добавлена`);
     });
 
     // Глобальное делегирование кликов
     document.body.addEventListener('click', (e) => {
-      // Удаление шага чек-листа в модалке
       const removeSubBtn = e.target.closest('[data-remove-editor-subtask]');
       if (removeSubBtn) {
         const subId = removeSubBtn.getAttribute('data-remove-editor-subtask');
@@ -1861,28 +1717,29 @@
         return;
       }
 
-      // Кнопки изменения часов НБ (+2 ч / -2 ч)
+      // Фильтр по дню недели в 1 клик
+      const filterDayBtn = e.target.closest('[data-filter-day]');
+      if (filterDayBtn) {
+        const val = filterDayBtn.getAttribute('data-filter-day');
+        activeDayFilter = val === 'all' ? 'all' : Number(val);
+        switchTab('schedule');
+        renderHeaderAndMetrics();
+        renderScheduleByDays();
+        return;
+      }
+
+      // Переход к вкладке пропусков НБ при клике на пилюлю НБ в расписании
+      const openNbBtn = e.target.closest('[data-open-nb-tab]');
+      if (openNbBtn) {
+        switchTab('subjects');
+        return;
+      }
+
       const nbBtn = e.target.closest('[data-nb-delta]');
       if (nbBtn) {
         const subj = nbBtn.getAttribute('data-nb-subject');
         const delta = Number(nbBtn.getAttribute('data-nb-delta')) || 0;
         adjustSubjectMissedHours(subj, delta);
-        return;
-      }
-
-      const dayPill = e.target.closest('[data-jump-day]');
-      if (dayPill) {
-        const dayId = dayPill.getAttribute('data-jump-day');
-        const card = document.getElementById(`dayCard_${dayId}`);
-        if (card) {
-          card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        } else {
-          document.getElementById('chkOnlyDaysWithClasses').checked = false;
-          renderScheduleByDays();
-          document
-            .getElementById(`dayCard_${dayId}`)
-            ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
         return;
       }
 
@@ -1901,7 +1758,7 @@
         if (task) {
           task.completed = true;
           persistState();
-          showToast('Задание отмечено как выполненное!');
+          showToast('Задание выполнено!');
         }
         return;
       }
@@ -1928,11 +1785,10 @@
         const lessonId = deleteLessonBtn.getAttribute('data-delete-lesson');
         appState.lessons = appState.lessons.filter((l) => l.id !== lessonId);
         persistState();
-        showToast('Пара удалена из расписания');
+        showToast('Пара удалена');
       }
     });
 
-    // Обработка чекбоксов заданий, подзадач и селектора часов предмета
     document.body.addEventListener('change', (e) => {
       const checkbox = e.target.closest('[data-toggle-task]');
       if (checkbox) {
@@ -1954,10 +1810,9 @@
           const sub = task.subtasks.find((s) => s.id === subId);
           if (sub) {
             sub.done = subtaskChk.checked;
-            // Если все шаги чек-листа отмечены — автоматически отмечаем задание выполненным
             if (task.subtasks.length > 0 && task.subtasks.every((s) => s.done)) {
               task.completed = true;
-              showToast('Все шаги чек-листа выполнены — задание закрыто!');
+              showToast('Все шаги выполнены — задание закрыто!');
             }
             persistState();
           }
@@ -1972,122 +1827,72 @@
       }
     });
 
+    // Модальное окно Облачной синхронизации (По ID и паролю)
     document.getElementById('btnCloudSync').addEventListener('click', () => {
       cloudConfig = loadCloudConfig();
       document.getElementById('quickSyncIdInput').value =
         cloudConfig.quickId || hemisConfig.login || '';
       document.getElementById('quickSyncPinInput').value = cloudConfig.quickPin || '';
-      document.getElementById('gistTokenInput').value = cloudConfig.gistToken || '';
-      document.getElementById('gistIdInput').value = cloudConfig.gistId || '';
-      document.getElementById('firebaseUrlInput').value = cloudConfig.firebaseUrl || '';
-      document.getElementById('firebaseSyncKeyInput').value = cloudConfig.firebaseSyncKey || '';
-      document.getElementById('firebaseSecretInput').value = cloudConfig.firebaseSecret || '';
       document.getElementById('cloudSyncMessage').classList.add('hidden');
       document.getElementById('modalCloudSync').classList.remove('hidden');
     });
 
-    document.querySelectorAll('[data-cloud-mode]').forEach((pill) => {
-      pill.addEventListener('click', () => {
-        document.querySelectorAll('[data-cloud-mode]').forEach((p) => p.classList.remove('active'));
-        pill.classList.add('active');
-        currentCloudMode = pill.getAttribute('data-cloud-mode');
-
-        document
-          .getElementById('cloudModeQuick')
-          ?.classList.toggle('hidden', currentCloudMode !== 'quick');
-        document
-          .getElementById('cloudModeGist')
-          .classList.toggle('hidden', currentCloudMode !== 'gist');
-        document
-          .getElementById('cloudModeFirebase')
-          .classList.toggle('hidden', currentCloudMode !== 'firebase');
-        document
-          .getElementById('cloudModeBackup')
-          .classList.toggle('hidden', currentCloudMode !== 'backup');
-        document
-          .getElementById('cloudModalFooter')
-          .classList.toggle('hidden', currentCloudMode === 'backup');
-      });
-    });
-
     const readCloudFormValues = () => ({
-      provider:
-        currentCloudMode === 'firebase'
-          ? 'firebase'
-          : currentCloudMode === 'gist'
-          ? 'gist'
-          : 'quick',
+      provider: 'quick',
       quickId: document.getElementById('quickSyncIdInput')?.value.trim() || '',
-      quickPin: document.getElementById('quickSyncPinInput')?.value.trim() || '',
-      gistToken: document.getElementById('gistTokenInput').value.trim(),
-      gistId: document.getElementById('gistIdInput').value.trim(),
-      firebaseUrl: document.getElementById('firebaseUrlInput').value.trim(),
-      firebaseSyncKey: document.getElementById('firebaseSyncKeyInput').value.trim(),
-      firebaseSecret: document.getElementById('firebaseSecretInput').value.trim()
+      quickPin: document.getElementById('quickSyncPinInput')?.value.trim() || ''
     });
 
     document.getElementById('cloudSyncForm').addEventListener('submit', (e) => {
       e.preventDefault();
-      cloudConfig = readCloudFormValues();
-      saveCloudConfig(cloudConfig);
+      cloudConfig = saveCloudConfig(readCloudFormValues());
       updateCloudStatusIndicator();
-      showToast('Настройки облачной синхронизации сохранены!');
+      showToast('ID и пароль синхронизации сохранены!');
       document.getElementById('modalCloudSync').classList.add('hidden');
     });
 
     document.getElementById('btnPushToCloud').addEventListener('click', async () => {
       const msgBox = document.getElementById('cloudSyncMessage');
-      cloudConfig = readCloudFormValues();
-      saveCloudConfig(cloudConfig);
+      cloudConfig = saveCloudConfig(readCloudFormValues());
 
       msgBox.className = 'alert-box info';
-      msgBox.textContent = 'Отправляем расписание, НБ и задания в облако...';
+      msgBox.textContent = 'Сохраняем ваше расписание и задания в облако...';
       msgBox.classList.remove('hidden');
 
       try {
-        const res = await pushStateToCloud(appState, cloudConfig);
-        if (res.gistId) {
-          document.getElementById('gistIdInput').value = res.gistId;
-        }
+        await pushStateToCloud(appState, cloudConfig);
         msgBox.className = 'alert-box success';
-        if (cloudConfig.provider === 'quick') {
-          msgBox.textContent = `Готово! Теперь на телефоне введите ID «${cloudConfig.quickId}» и ваш пароль, и нажмите «⬇ Загрузить из облака»!`;
-        } else if (res.gistId) {
-          msgBox.textContent = `Данные успешно сохранены в GitHub Gist! Ваш Gist ID: ${res.gistId}`;
-        } else {
-          msgBox.textContent = 'Данные успешно отправлены в Firebase!';
-        }
+        msgBox.textContent = `Успешно сохранено! Теперь на телефоне введите ID «${cloudConfig.quickId}» и этот же пароль, и нажмите «⬇ Загрузить из облака».`;
         updateCloudStatusIndicator(true);
       } catch (err) {
         msgBox.className = 'alert-box error';
-        msgBox.textContent = `Ошибка синхронизации: ${err.message}`;
+        msgBox.textContent = `Ошибка: ${err.message}`;
       }
     });
 
     document.getElementById('btnPullFromCloud').addEventListener('click', async () => {
       const msgBox = document.getElementById('cloudSyncMessage');
-      cloudConfig = readCloudFormValues();
-      saveCloudConfig(cloudConfig);
+      cloudConfig = saveCloudConfig(readCloudFormValues());
 
       msgBox.className = 'alert-box info';
-      msgBox.textContent = 'Загружаем данные из облака...';
+      msgBox.textContent = 'Загружаем ваши данные из облака...';
       msgBox.classList.remove('hidden');
 
       try {
         appState = await pullStateFromCloud(cloudConfig);
         renderAll();
         msgBox.className = 'alert-box success';
-        msgBox.textContent = `Данные успешно загружены из облака (пар: ${appState.lessons.length}, заданий: ${appState.tasks.length})!`;
+        msgBox.textContent = `Данные загружены (пар: ${appState.lessons.length}, заданий: ${appState.tasks.length})!`;
         updateCloudStatusIndicator(true);
       } catch (err) {
         msgBox.className = 'alert-box error';
-        msgBox.textContent = `Ошибка загрузки: ${err.message}`;
+        msgBox.textContent = `Ошибка: ${err.message}`;
       }
     });
 
     document.getElementById('btnExportJson').addEventListener('click', () => {
       exportStateToJsonFile(appState);
-      showToast('Файл резервной копии скачан!');
+      showToast('Резервная копия (.json) скачана');
     });
 
     document.getElementById('importJsonFileInput').addEventListener('change', (e) => {
@@ -2098,12 +1903,12 @@
         try {
           const parsed = JSON.parse(String(reader.result));
           if (!Array.isArray(parsed.lessons) && !Array.isArray(parsed.tasks)) {
-            throw new Error('Некорректный формат файла резервной копии.');
+            throw new Error('Некорректный формат файла.');
           }
           appState = saveLocalState(parsed);
           renderAll();
           document.getElementById('modalCloudSync').classList.add('hidden');
-          showToast('Данные из файла успешно восстановлены!');
+          showToast('Данные из файла восстановлены!');
         } catch (err) {
           alert(`Ошибка чтения файла: ${err.message}`);
         }
@@ -2117,12 +1922,9 @@
     initPwaAndServiceWorker();
     renderAll();
 
-    // Обновление живого таймера пар каждую секунду
     setInterval(renderLiveClassTimer, 1000);
-    // Проверка вечернего напоминания каждые 25 секунд
     setInterval(checkScheduledEveningReminder, 25000);
 
-    // Автоматическая фоновая подгрузка свежих данных из облака при открытии сайта
     if (isCloudConfigured(cloudConfig)) {
       try {
         const remote = await pullStateFromCloud(cloudConfig);

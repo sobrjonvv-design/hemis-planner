@@ -1,18 +1,12 @@
 /**
- * Модуль хранения данных и облачной синхронизации (Телефон ↔ ПК) для всех пользователей
- * Поддерживает:
- * 1. Быструю облачную синхронизацию по ID / Логину и паролю (БЕЗ токенов GitHub и регистрации!)
- *    Работает через связку Bytebin + KeyVal + Ntfy с поддержкой CORS на GitHub Pages
- * 2. GitHub Gist API (для продвинутых пользователей)
- * 3. Firebase Realtime Database REST API
- * 4. Экспорт и импорт резервной копии в формате .json
+ * Модуль хранения данных и быстрой облачной синхронизации (Телефон ↔ ПК)
+ * Работает по простому ID студента и паролю (без токенов GitHub и регистрации).
  */
 (function (global) {
   const STATE_KEY = 'hemis_planner_state_v1';
-  const CLOUD_CONFIG_KEY = 'hemis_planner_cloud_v1';
+  const CLOUD_CONFIG_KEY = 'hemis_planner_cloud_v2';
   const HEMIS_AUTH_KEY = 'hemis_planner_auth_v1';
   const REMINDER_KEY = 'hemis_planner_reminders_v1';
-  const GIST_FILENAME = 'hemis-planner-data.json';
   const KEYVAL_APP_KEY = 'osmjpp9p';
 
   function loadLocalState() {
@@ -45,10 +39,10 @@
   function saveLocalState(state) {
     const payload = {
       studentProfile: state.studentProfile || null,
-      lessons: state.lessons || [],
-      tasks: state.tasks || [],
-      attendance: state.attendance || {},
-      updatedAt: state.updatedAt || Date.now()
+      lessons: Array.isArray(state.lessons) ? state.lessons : [],
+      tasks: Array.isArray(state.tasks) ? state.tasks : [],
+      attendance: state.attendance && typeof state.attendance === 'object' ? state.attendance : {},
+      updatedAt: Date.now()
     };
     localStorage.setItem(STATE_KEY, JSON.stringify(payload));
     return payload;
@@ -98,51 +92,38 @@
       const raw = localStorage.getItem(CLOUD_CONFIG_KEY);
       const parsed = raw ? JSON.parse(raw) : {};
       return {
-        provider: parsed.provider || 'quick',
-        quickId: parsed.quickId || '',
-        quickPin: parsed.quickPin || '',
-        gistToken: parsed.gistToken || '',
-        gistId: parsed.gistId || '',
-        firebaseUrl: parsed.firebaseUrl || '',
-        firebaseSyncKey: parsed.firebaseSyncKey || '',
-        firebaseSecret: parsed.firebaseSecret || ''
+        provider: 'quick',
+        quickId: String(parsed.quickId || '').trim(),
+        quickPin: String(parsed.quickPin || '').trim()
       };
     } catch (_) {
       return {
         provider: 'quick',
         quickId: '',
-        quickPin: '',
-        gistToken: '',
-        gistId: '',
-        firebaseUrl: '',
-        firebaseSyncKey: '',
-        firebaseSecret: ''
+        quickPin: ''
       };
     }
   }
 
   function saveCloudConfig(config) {
-    localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(config));
+    const clean = {
+      provider: 'quick',
+      quickId: String(config.quickId || '').trim(),
+      quickPin: String(config.quickPin || '').trim()
+    };
+    localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(clean));
+    return clean;
   }
 
   function isCloudConfigured(config = loadCloudConfig()) {
-    if (config.provider === 'quick') {
-      return Boolean(config.quickId && config.quickId.trim() && config.quickPin && config.quickPin.trim());
-    }
-    if (config.provider === 'gist') {
-      return Boolean(config.gistToken && config.gistToken.trim());
-    }
-    if (config.provider === 'firebase') {
-      return Boolean(config.firebaseUrl && config.firebaseSyncKey);
-    }
-    return false;
+    return Boolean(config.quickId && config.quickId.trim() && config.quickPin && config.quickPin.trim());
   }
 
   /**
    * Генерирует детерминированный безопасный хэш-ключ комнаты из ID студента и пароля синхронизации
    */
   function computeQuickSyncKey(quickId, quickPin) {
-    const raw = `hemis_v1_${String(quickId).trim().toLowerCase()}_${String(quickPin).trim()}`;
+    const raw = `hemis_v2_${String(quickId).trim().toLowerCase()}_${String(quickPin).trim()}`;
     let h1 = 0xdeadbeef ^ raw.length;
     let h2 = 0x41c6ce57 ^ raw.length;
     for (let i = 0, ch; i < raw.length; i++) {
@@ -160,7 +141,17 @@
     return `hp_${cleanPrefix}_${hex}`;
   }
 
+  /**
+   * Отправляет состояние в облако (Simple CORS POST без нестандартных заголовков)
+   */
   async function pushStateToCloud(state, config = loadCloudConfig()) {
+    const quickId = String(config.quickId || '').trim();
+    const quickPin = String(config.quickPin || '').trim();
+
+    if (!quickId || !quickPin) {
+      throw new Error('Введите ваш ID студента и придумайте пароль синхронизации.');
+    }
+
     const payload = {
       studentProfile: state.studentProfile || null,
       lessons: state.lessons || [],
@@ -169,163 +160,100 @@
       updatedAt: Date.now()
     };
 
-    // 1. Быстрая синхронизация без токенов (по ID студента и ПИН/паролю)
-    if (config.provider === 'quick') {
-      if (!config.quickId || !config.quickPin) {
-        throw new Error('Введите ваш ID (логин) и придумайте код/пароль синхронизации.');
+    const syncRoomKey = computeQuickSyncKey(quickId, quickPin);
+    const jsonStr = JSON.stringify(payload);
+    let bbKey = null;
+    let savedSuccess = false;
+
+    // 1. Загружаем полный JSON в Bytebin (Simple POST)
+    try {
+      const bbRes = await fetch('https://bytebin.lucko.me/post', {
+        method: 'POST',
+        body: jsonStr
+      });
+      if (bbRes.ok) {
+        const bbData = await bbRes.json();
+        if (bbData && bbData.key) {
+          bbKey = bbData.key;
+        }
       }
-      const syncRoomKey = computeQuickSyncKey(config.quickId, config.quickPin);
-      const jsonStr = JSON.stringify(payload);
+    } catch (e) {
+      console.warn('Bytebin error:', e);
+    }
 
-      let storedPointer = false;
-
-      // Сохраняем полный JSON в Bytebin и записываем указатель в KeyVal
+    // 2. Сохраняем короткий ключ в KeyVal
+    if (bbKey) {
       try {
-        const bbRes = await fetch('https://bytebin.lucko.me/post', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: jsonStr
-        });
-        if (bbRes.ok) {
-          const bbData = await bbRes.json();
-          if (bbData && bbData.key) {
-            const kvUrl = `https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/${KEYVAL_APP_KEY}/${encodeURIComponent(
-              syncRoomKey
-            )}/${encodeURIComponent(bbData.key)}`;
-            const kvRes = await fetch(kvUrl, { method: 'POST' });
-            if (kvRes.ok) {
-              storedPointer = true;
-            }
-          }
+        const kvUrl = `https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/${KEYVAL_APP_KEY}/${encodeURIComponent(
+          syncRoomKey
+        )}/${encodeURIComponent(bbKey)}`;
+        const kvRes = await fetch(kvUrl, { method: 'POST', body: '' });
+        if (kvRes.ok) {
+          savedSuccess = true;
         }
       } catch (e) {
-        console.warn('Bytebin/KeyVal warning:', e);
+        console.warn('KeyVal error:', e);
       }
-
-      // Также дублируем в канал ntfy.sh для мгновенного резерва
-      try {
-        await fetch(`https://ntfy.sh/${syncRoomKey}`, {
-          method: 'PUT',
-          headers: {
-            Filename: 'state.json'
-          },
-          body: jsonStr
-        });
-        storedPointer = true;
-      } catch (e) {
-        console.warn('Ntfy mirror warning:', e);
-      }
-
-      if (!storedPointer) {
-        throw new Error('Не удалось связаться с облачным сервером. Проверьте подключение к интернету.');
-      }
-
-      return { syncRoomKey, updatedAt: payload.updatedAt };
     }
 
-    // 2. GitHub Gist
-    if (config.provider === 'gist') {
-      if (!config.gistToken) {
-        throw new Error('Укажите GitHub Personal Access Token с правом gist.');
-      }
-      const headers = {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${config.gistToken.trim()}`,
-        'Content-Type': 'application/json'
-      };
-
-      const body = {
-        description: 'HEMIS Planner — синхронизация расписания, НБ и учебных заданий',
-        public: false,
-        files: {
-          [GIST_FILENAME]: {
-            content: JSON.stringify(payload, null, 2)
-          }
-        }
-      };
-
-      const gistId = (config.gistId || '').trim();
-      const url = gistId
-        ? `https://api.github.com/gists/${gistId}`
-        : 'https://api.github.com/gists';
-
-      const res = await fetch(url, {
-        method: gistId ? 'PATCH' : 'POST',
-        headers,
-        body: JSON.stringify(body)
+    // 3. Также отправляем резервное сообщение в ntfy.sh (Simple POST без кастомных заголовков)
+    try {
+      const ntfyPayload = bbKey ? `BBKEY:${bbKey}` : jsonStr;
+      const ntfyRes = await fetch(`https://ntfy.sh/${syncRoomKey}`, {
+        method: 'POST',
+        body: ntfyPayload
       });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.message || `Ошибка GitHub Gist API (HTTP ${res.status})`);
+      if (ntfyRes.ok) {
+        savedSuccess = true;
       }
-
-      const result = await res.json();
-      if (result.id && result.id !== config.gistId) {
-        config.gistId = result.id;
-        saveCloudConfig(config);
-      }
-      return { gistId: result.id, updatedAt: payload.updatedAt };
+    } catch (e) {
+      console.warn('Ntfy error:', e);
     }
 
-    // 3. Firebase Realtime DB
-    if (config.provider === 'firebase') {
-      if (!config.firebaseUrl || !config.firebaseSyncKey) {
-        throw new Error('Укажите URL базы Firebase и ваш личный ключ синхронизации.');
-      }
-      const base = config.firebaseUrl.replace(/\/+$/, '');
-      const safeKey = encodeURIComponent(config.firebaseSyncKey.trim());
-      const authQuery = config.firebaseSecret
-        ? `?auth=${encodeURIComponent(config.firebaseSecret.trim())}`
-        : '';
-      const endpoint = `${base}/hemis_planner/${safeKey}.json${authQuery}`;
-
-      const res = await fetch(endpoint, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!res.ok) {
-        throw new Error(`Ошибка записи в Firebase (HTTP ${res.status})`);
-      }
-      return { updatedAt: payload.updatedAt };
+    if (!savedSuccess) {
+      throw new Error('Не удалось связаться с облаком. Проверьте подключение к интернету.');
     }
 
-    throw new Error('Неизвестный провайдер облачной синхронизации.');
+    return { syncRoomKey, updatedAt: payload.updatedAt };
   }
 
+  /**
+   * Загружает состояние из облака по ID студента и паролю
+   */
   async function pullStateFromCloud(config = loadCloudConfig()) {
-    // 1. Быстрая загрузка по ID студента и паролю
-    if (config.provider === 'quick') {
-      if (!config.quickId || !config.quickPin) {
-        throw new Error('Введите ваш ID (логин) и код/пароль синхронизации.');
-      }
-      const syncRoomKey = computeQuickSyncKey(config.quickId, config.quickPin);
+    const quickId = String(config.quickId || '').trim();
+    const quickPin = String(config.quickPin || '').trim();
 
-      // Сначала пробуем получить указатель из KeyVal -> Bytebin
-      try {
-        const kvUrl = `https://keyvalue.immanuel.co/api/KeyVal/GetValue/${KEYVAL_APP_KEY}/${encodeURIComponent(
-          syncRoomKey
-        )}`;
-        const kvRes = await fetch(kvUrl);
-        if (kvRes.ok) {
-          const rawKey = await kvRes.json();
-          if (rawKey && typeof rawKey === 'string' && rawKey.trim()) {
-            const bbRes = await fetch(`https://bytebin.lucko.me/${encodeURIComponent(rawKey.trim())}`);
-            if (bbRes.ok) {
-              const parsed = await bbRes.json();
-              if (parsed && (Array.isArray(parsed.lessons) || Array.isArray(parsed.tasks))) {
-                return saveLocalState(parsed);
-              }
+    if (!quickId || !quickPin) {
+      throw new Error('Введите ваш ID студента и пароль синхронизации.');
+    }
+
+    const syncRoomKey = computeQuickSyncKey(quickId, quickPin);
+
+    // 1. Сначала пробуем KeyVal -> Bytebin
+    try {
+      const kvUrl = `https://keyvalue.immanuel.co/api/KeyVal/GetValue/${KEYVAL_APP_KEY}/${encodeURIComponent(
+        syncRoomKey
+      )}`;
+      const kvRes = await fetch(kvUrl);
+      if (kvRes.ok) {
+        const rawKey = await kvRes.json();
+        if (rawKey && typeof rawKey === 'string' && rawKey.trim()) {
+          const bbRes = await fetch(`https://bytebin.lucko.me/${encodeURIComponent(rawKey.trim())}`);
+          if (bbRes.ok) {
+            const parsed = await bbRes.json();
+            if (parsed && (Array.isArray(parsed.lessons) || Array.isArray(parsed.tasks))) {
+              return saveLocalState(parsed);
             }
           }
         }
-      } catch (e) {
-        console.warn('KeyVal/Bytebin pull fallback:', e);
       }
+    } catch (e) {
+      console.warn('KeyVal/Bytebin pull fallback:', e);
+    }
 
-      // Резервный вариант через ntfy.sh
+    // 2. Резервный вариант через ntfy.sh
+    try {
       const ntfyRes = await fetch(`https://ntfy.sh/${syncRoomKey}/json?poll=1&since=all`);
       if (ntfyRes.ok) {
         const text = await ntfyRes.text();
@@ -337,78 +265,28 @@
         for (let i = lines.length - 1; i >= 0; i--) {
           try {
             const eventObj = JSON.parse(lines[i]);
-            if (eventObj.attachment?.url) {
-              const fileRes = await fetch(eventObj.attachment.url);
-              if (fileRes.ok) {
-                const parsed = await fileRes.json();
+            const msg = String(eventObj.message || '').trim();
+            if (msg.startsWith('BBKEY:')) {
+              const key = msg.replace('BBKEY:', '').trim();
+              const bbRes = await fetch(`https://bytebin.lucko.me/${encodeURIComponent(key)}`);
+              if (bbRes.ok) {
+                const parsed = await bbRes.json();
                 return saveLocalState(parsed);
               }
-            } else if (eventObj.message && eventObj.message.startsWith('{')) {
-              const parsed = JSON.parse(eventObj.message);
+            } else if (msg.startsWith('{')) {
+              const parsed = JSON.parse(msg);
               return saveLocalState(parsed);
             }
           } catch (_) {}
         }
       }
-
-      throw new Error(
-        'По этому ID и паролю в облаке ещё нет данных. Сначала нажмите «⬆ Отправить в облако» на том устройстве, где загружено расписание!'
-      );
+    } catch (e) {
+      console.warn('Ntfy pull error:', e);
     }
 
-    // 2. GitHub Gist
-    if (config.provider === 'gist') {
-      if (!config.gistToken || !config.gistId) {
-        throw new Error('Для загрузки из GitHub Gist укажите Token и ID существующего Gist.');
-      }
-      const res = await fetch(`https://api.github.com/gists/${config.gistId.trim()}`, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${config.gistToken.trim()}`
-        }
-      });
-
-      if (!res.ok) {
-        throw new Error(`Не удалось загрузить Gist (HTTP ${res.status})`);
-      }
-
-      const data = await res.json();
-      const fileObj = data.files?.[GIST_FILENAME] || Object.values(data.files || {})[0];
-      if (!fileObj || !fileObj.content) {
-        throw new Error('В указанном Gist не найдено данных HEMIS Planner.');
-      }
-
-      const parsed = JSON.parse(fileObj.content);
-      return saveLocalState(parsed);
-    }
-
-    // 3. Firebase Realtime DB
-    if (config.provider === 'firebase') {
-      if (!config.firebaseUrl || !config.firebaseSyncKey) {
-        throw new Error('Укажите URL базы Firebase и ваш личный ключ синхронизации.');
-      }
-      const base = config.firebaseUrl.replace(/\/+$/, '');
-      const safeKey = encodeURIComponent(config.firebaseSyncKey.trim());
-      const authQuery = config.firebaseSecret
-        ? `?auth=${encodeURIComponent(config.firebaseSecret.trim())}`
-        : '';
-      const endpoint = `${base}/hemis_planner/${safeKey}.json${authQuery}`;
-
-      const res = await fetch(endpoint, { method: 'GET' });
-      if (!res.ok) {
-        throw new Error(`Ошибка чтения из Firebase (HTTP ${res.status})`);
-      }
-
-      const parsed = await res.json();
-      if (!parsed) {
-        throw new Error('По указанному ключу в базе Firebase пока нет сохранённых данных.');
-      }
-
-      return saveLocalState(parsed);
-    }
-
-    throw new Error('Неизвестный провайдер облачной синхронизации.');
+    throw new Error(
+      'Данные по этому ID и паролю ещё не найдены в облаке. Сначала нажмите «⬆ Сохранить в облако» на устройстве с расписанием!'
+    );
   }
 
   function exportStateToJsonFile(state) {

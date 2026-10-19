@@ -1,11 +1,11 @@
-const CACHE_NAME = 'hemis-planner-cache-v3';
+const CACHE_NAME = 'hemis-planner-cache-v4';
 const ASSETS = [
   './',
   './index.html',
-  './css/styles.css',
-  './js/hemis.js',
-  './js/storage.js',
-  './js/app.js',
+  './css/styles.css?v=4',
+  './js/hemis.js?v=4',
+  './js/storage.js?v=4',
+  './js/app.js?v=4',
   './manifest.json',
   './icon.svg'
 ];
@@ -39,13 +39,13 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
 
   event.respondWith(
-    fetch(req)
+    fetch(req, { cache: 'no-cache' })
       .then((res) => {
         const clone = res.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
         return res;
       })
-      .catch(() => caches.match(req))
+      .catch(() => caches.match(req, { ignoreSearch: true }))
   );
 });
 
