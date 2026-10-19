@@ -1,18 +1,25 @@
 {
-  "name": "HEMIS Planner — Расписание, НБ и задания",
+  "id": "./",
+  "name": "HEMIS Planner — студенческий планировщик",
   "short_name": "HEMIS Planner",
-  "description": "Персональный анализатор расписания HEMIS, контроль пропусков (НБ), живой таймер пар и чек-листы заданий.",
-  "start_url": "./index.html",
+  "description": "Расписание, задания и посещаемость студентов вузов Узбекистана. Работает офлайн.",
+  "lang": "ru",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
-  "background_color": "#0b0f19",
-  "theme_color": "#2563eb",
-  "orientation": "portrait-primary",
+  "orientation": "any",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "categories": ["education", "productivity"],
   "icons": [
-    {
-      "src": "icon.svg",
-      "sizes": "192x192 512x512",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    }
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Расписание", "url": "./#schedule" },
+    { "name": "Задания", "url": "./#tasks" },
+    { "name": "Посещаемость", "url": "./#attendance" }
   ]
 }

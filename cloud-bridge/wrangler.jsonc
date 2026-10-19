@@ -1,0 +1,10 @@
+{
+  "name": "hemisjon",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "vars": {
+    "ALLOWED_ORIGINS": "https://sobrjonvv-design.github.io"
+  },
+  "observability": { "enabled": false }
+}

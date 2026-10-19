@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Проверка файлов · HEMIS Planner</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#fafafa;color:#27272a;font:14px/1.8 system-ui,Arial,sans-serif}main{max-width:760px;margin:55px auto;padding:0 24px}h1{font-size:25px;letter-spacing:-.7px;line-height:1.5}p{color:#71717a}a{color:inherit}button{font:inherit;background:#18181b;color:#fafafa;border:0;border-radius:6px;padding:10px 16px;cursor:pointer}button:disabled{opacity:.5}table{border-collapse:collapse;width:100%;margin-top:24px}th,td{text-align:left;padding:11px 8px;border-bottom:1px solid #e4e4e7;font-size:12px}th{font-weight:500;color:#71717a}td:first-child{font-family:monospace}small{color:#a1a1aa}#result{padding:15px;background:#f1f1f3;border-radius:6px}.ok{color:#527866}.error{color:#b55a54}#address{overflow-wrap:anywhere;font-family:monospace;font-size:12px}.actions{display:flex;gap:20px;align-items:center;margin-top:22px;flex-wrap:wrap}
+  </style>
+</head>
+<body>
+<main>
+  <small>HEMIS PLANNER · 2026.10.20.5</small>
+  <h1>Все ли файлы сайта на месте?</h1>
+  <p>Эта страница проверяет загрузку приложения. Она не подключается к HEMIS, не читает задания и не отправляет данные в облако.</p>
+  <p id="address"></p>
+  <p id="result" role="status" aria-live="polite">Проверяем файлы…</p>
+  <table><thead><tr><th>Файл</th><th>Результат</th></tr></thead><tbody id="files"></tbody></table>
+  <div class="actions"><button id="retry" type="button">Проверить снова</button><a href="./">Открыть планировщик →</a></div>
+  <p>Если здесь всё загружено, а вместо сайта видна ошибка GitHub, откройте Actions в репозитории и проверьте результат публикации Pages.</p>
+</main>
+<noscript>Включите JavaScript, чтобы проверить файлы.</noscript>
+<script>
+  (function () {
+    'use strict';
+    var files=['index.html','styles.css','app.js','data.js','api.js','sync.js','theme.js','manifest.json','sw.js','icon.svg','icon-192.png','icon-512.png','bridge-setup.html','cloud-bridge/worker.js'];
+    var result=document.getElementById('result'),list=document.getElementById('files'),button=document.getElementById('retry');
+    document.getElementById('address').textContent='Адрес: '+new URL('./',location.href).href;
+    async function run() {
+      list.textContent='';button.disabled=true;
+      if(location.protocol==='file:'){result.textContent='Откройте start.bat либо опубликованный адрес HTTPS. Проверка через file:// невозможна.';result.className='error';button.disabled=false;return;}
+      result.textContent='Проверяем файлы…';result.className='';var errors=0;
+      for(var name of files){
+        var row=document.createElement('tr'),nameCell=document.createElement('td'),statusCell=document.createElement('td');
+        nameCell.textContent=name;statusCell.textContent='Проверка…';row.appendChild(nameCell);row.appendChild(statusCell);list.appendChild(row);
+        var controller=new AbortController(),timeout=setTimeout(function(c){c.abort();},12000,controller);
+        try{
+          var url=new URL('./'+name,location.href);url.searchParams.set('diagnostic',Date.now());
+          var response=await fetch(url.href,{cache:'no-store',credentials:'omit',signal:controller.signal});
+          if(!response.ok)throw new Error('HTTP '+response.status+' — файл не загружен');
+          if(name.endsWith('.png')){
+            var bytes=new Uint8Array(await response.arrayBuffer());
+            if(bytes.length<8||bytes[0]!==137||bytes[1]!==80||bytes[2]!==78||bytes[3]!==71)throw new Error('Вместо PNG получен другой файл');
+          }else{
+            var text=await response.text();
+            if(!text.trim())throw new Error('Файл пустой');
+            if(!name.endsWith('.html')&&/^\s*(?:<!doctype\s+html|<html)/i.test(text))throw new Error('Вместо файла сервер вернул HTML-страницу');
+            if(name.endsWith('.js')&&!/(?:javascript|ecmascript)/i.test(response.headers.get('content-type')||''))throw new Error('Сервер не передаёт файл как JavaScript');
+            if(name==='manifest.json'){var manifest=JSON.parse(text);if(manifest.start_url!=='./'||manifest.scope!=='./')throw new Error('Пути PWA не соответствуют папке сайта');}
+            if(name==='index.html'&&!text.includes('2026.10.20.5'))throw new Error('На сервере предыдущая версия index.html');
+            if(name==='sw.js'&&!text.includes("CACHE_VERSION = '2026.10.20.5'"))throw new Error('На сервере предыдущая версия sw.js');
+          }
+          statusCell.textContent='✓ Загружен';statusCell.className='ok';
+        }catch(error){errors++;statusCell.textContent=error.name==='AbortError'?'Нет ответа за 12 секунд':error.message;statusCell.className='error';}
+        finally{clearTimeout(timeout);}
+      }
+      result.textContent=errors?'Не прошли проверку: '+errors+'. Повторно загрузите отмеченные файлы в корень репозитория и дождитесь публикации.':'Все '+files.length+' файлов загружены. Можно открыть планировщик.';
+      result.className=errors?'error':'ok';button.disabled=false;
+    }
+    button.addEventListener('click',run);run();
+  })();
+</script>
+</body>
+</html>

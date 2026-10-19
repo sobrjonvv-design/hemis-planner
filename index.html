@@ -1,550 +1,99 @@
-<!DOCTYPE html>
-<html lang="ru" data-theme="dark">
+<!doctype html>
+<html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HEMIS Planner — Расписание, НБ и задания</title>
-  <meta name="description" content="Минималистичный планировщик расписания HEMIS с контролем пропусков (НБ), живым таймером пар и синхронизацией между телефоном и ПК." />
-  <meta name="theme-color" content="#2563eb" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="manifest" href="manifest.json?v=4" />
-  <link rel="icon" href="icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="icon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=4" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#09090b">
+  <meta name="description" content="Вся учебная неделя в одном месте: расписание HEMIS, задания и контроль посещаемости.">
+  <meta name="application-version" content="2026.10.20.5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>HEMIS Planner — моя учебная неделя</title>
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="manifest" href="./manifest.json">
+  <script>
+    (function () {
+      var preference = 'system';
+      try { preference = localStorage.getItem('hemis-planner-theme-v1:' + new URL('./', location.href).pathname) || 'system'; } catch (_) {}
+      var dark = preference === 'dark' || preference === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700;750&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css?v=2026.10.20.5">
+  <style>
+    .startup-message{max-width:560px;margin:15vh auto;padding:28px;font:14px/1.8 Inter,Arial,sans-serif;color:#27272a;text-align:left}
+    .startup-message h1{font-size:23px;line-height:1.4;margin:0 0 16px}.startup-message p{margin:12px 0;color:#71717a}
+    .startup-message a,.startup-message button{display:inline-block;margin:10px 10px 0 0;padding:9px 14px;border:1px solid #d4d4d8;border-radius:6px;background:#fafafa;color:#27272a;font:inherit;text-decoration:none;cursor:pointer}
+    .startup-message pre{padding:12px;background:#f1f1f3;border-radius:6px;font:11px/1.7 monospace;white-space:pre-wrap;overflow-wrap:anywhere}.startup-message small{display:block;color:#a1a1aa;margin-top:20px}
+  </style>
 </head>
 <body>
-  <!-- Минималистичная шапка -->
-  <header class="topbar">
-    <div class="container topbar-inner">
-      <div class="brand">
-        <div class="brand-logo" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
-            <path d="M8 7h6"/>
-            <path d="M8 11h8"/>
-          </svg>
-        </div>
-        <div>
-          <span class="brand-title">HEMIS <span class="accent-text">Planner</span></span>
-          <span class="brand-subtitle" id="studentBadge">Расписание и задания</span>
-        </div>
-      </div>
-
-      <div class="topbar-actions">
-        <button class="btn btn-ghost btn-sm" id="btnCloudSync" title="Синхронизация между телефоном и ПК">
-          <span class="status-dot" id="cloudStatusDot"></span>
-          <span id="cloudStatusText">Облако</span>
-        </button>
-
-        <button class="btn btn-secondary btn-sm" id="btnOpenHemisModal" title="Подключить или обновить расписание HEMIS">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
-            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>
-          </svg>
-          <span>HEMIS</span>
-        </button>
-
-        <button class="btn btn-primary btn-sm" id="btnQuickAddTask">
-          <span>+ Задание</span>
-        </button>
-
-        <button class="btn btn-icon" id="btnOpenReminders" title="Напоминания и установка приложения">
-          <span class="status-dot dot-Corner" id="reminderStatusDot"></span>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-          </svg>
-        </button>
-
-        <button class="btn btn-icon" id="btnThemeToggle" title="Переключить тему" aria-label="Переключить тему">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="4"/>
-            <path d="M12 2v2M12 20v2m-7.07-14.93 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2m-14.93 7.07 1.41-1.41m11.32-11.32 1.41-1.41"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-  </header>
-
-  <main class="container main-content">
-    <!-- Компактный живой статус-бар (Объединяет таймер пары и сводку дня без лишнего шума) -->
-    <section class="status-overview-bar" id="statusOverviewBar">
-      <div class="status-overview-left">
-        <span class="eyebrow" id="currentDateDisplay">Сегодня</span>
-        <div class="live-status-line" id="liveTimerBanner">
-          <span class="live-headline" id="briefingHeadline">Загрузите расписание HEMIS</span>
-        </div>
-        <p class="status-subline" id="briefingSubtext">Нажмите «HEMIS», чтобы загрузить свои пары и контролировать задания.</p>
-      </div>
-
-      <div class="status-metrics-pills">
-        <div class="metric-pill" id="pillTodaySummary">
-          <span class="metric-pill-label" id="todayDayName">Сегодня</span>
-          <strong class="metric-pill-val" id="statTodayClasses">0 пар</strong>
-          <small id="statTodayTasks">0 заданий</small>
-        </div>
-        <div class="metric-pill" id="pillTomorrowSummary">
-          <span class="metric-pill-label" id="tomorrowDayName">Завтра</span>
-          <strong class="metric-pill-val" id="statTomorrowClasses">0 пар</strong>
-          <small id="statTomorrowTasks">0 заданий</small>
-        </div>
-        <div class="metric-pill" id="pillNbSummary">
-          <span class="metric-pill-label">Всего НБ</span>
-          <strong class="metric-pill-val" id="statTotalPending">0 ч.</strong>
-          <small id="statCompletedTotal">Выполнено: 0</small>
-        </div>
-      </div>
-    </section>
-
-    <!-- Компактные уведомления о заданиях на сегодня/завтра (показываются только если есть активные задания) -->
-    <section class="alerts-section" id="smartAlertsSection"></section>
-
-    <!-- Единая минималистичная панель навигации и выбора дня недели -->
-    <section class="nav-strip-bar">
-      <div class="tabs" role="tablist">
-        <button class="tab-btn active" data-tab="schedule" role="tab" aria-selected="true">
-          <span>Расписание</span>
-        </button>
-        <button class="tab-btn" data-tab="tasks" role="tab" aria-selected="false">
-          <span>Задания</span>
-          <span class="tab-counter" id="tabTasksCounter">0</span>
-        </button>
-        <button class="tab-btn" data-tab="subjects" role="tab" aria-selected="false">
-          <span>Пропуски НБ</span>
-          <span class="tab-counter badge-danger hidden" id="tabNbWarningCounter">!</span>
-        </button>
-      </div>
-
-      <!-- Быстрый фильтр по дням недели в 1 клик -->
-      <div class="week-days-strip" id="weekDaysStrip" aria-label="Дни недели">
-        <!-- Заполняется через JS: Все | Пн | Вт | Ср | Чт | Пт | Сб -->
-      </div>
-
-      <div class="quick-schedule-actions" id="scheduleFilters">
-        <button class="btn btn-ghost btn-xs" id="btnRefreshSchedule" title="Обновить данные из HEMIS">↻ Обновить</button>
-        <button class="btn btn-ghost btn-xs" id="btnAddManualLesson">+ Пара</button>
-        <label class="toggle-switch" title="Скрыть уже выполненные задания под парами">
-          <input type="checkbox" id="chkHideCompletedInline" />
-          <span>Скрыть готовые</span>
-        </label>
-        <input type="hidden" id="dayFilterSelect" value="all" />
-        <input type="checkbox" id="chkOnlyDaysWithClasses" checked class="hidden" />
-      </div>
-    </section>
-
-    <!-- Вкладка 1: Расписание по дням недели + Задания под каждым предметом -->
-    <section id="tabContentSchedule" class="tab-panel">
-      <div id="emptyScheduleBanner" class="empty-state hidden">
-        <div class="empty-icon">✨</div>
-        <h2>Ваше расписание пока пусто</h2>
-        <p>Войдите в свой аккаунт HEMIS или откройте демо-режим, чтобы увидеть расписание по дням недели и записывать задания под каждым предметом.</p>
-        <div class="empty-actions">
-          <button class="btn btn-primary" id="btnEmptyConnectHemis">Подключить HEMIS</button>
-          <button class="btn btn-secondary" id="btnLoadDemoSchedule">Демо-режим</button>
-          <button class="btn btn-ghost" id="btnEmptyAddManual">+ Добавить пару вручную</button>
-        </div>
-      </div>
-
-      <div class="days-grid" id="daysScheduleGrid"></div>
-    </section>
-
-    <!-- Вкладка 2: Все задания -->
-    <section id="tabContentTasks" class="tab-panel hidden">
-      <div class="tasks-toolbar">
-        <div class="tasks-search-group">
-          <input type="text" id="taskSearchInput" class="input-field" placeholder="Поиск по заданиям..." />
-          <select id="taskSubjectFilter" class="input-select">
-            <option value="all">Все предметы</option>
-          </select>
-          <select id="taskStatusFilter" class="input-select">
-            <option value="all">Все</option>
-            <option value="pending">Активные</option>
-            <option value="completed">Выполненные</option>
-          </select>
-        </div>
-        <button class="btn btn-primary btn-sm" id="btnAddTaskFromList">+ Добавить задание</button>
-      </div>
-      <div id="allTasksList" class="all-tasks-container"></div>
-    </section>
-
-    <!-- Вкладка 3: Контроль посещаемости («НБ») и предметы -->
-    <section id="tabContentSubjects" class="tab-panel hidden">
-      <div class="attendance-summary-banner" id="attendanceSummaryBanner"></div>
-      <div class="subjects-grid" id="subjectsAnalyticsGrid"></div>
-    </section>
-  </main>
-
-  <!-- Модальное окно: Облачная синхронизация (Минималистичное, по ID и паролю) -->
-  <div class="modal-backdrop hidden" id="modalCloudSync">
-    <div class="modal-card" role="dialog" aria-labelledby="modalCloudTitle">
-      <div class="modal-header">
-        <h2 id="modalCloudTitle">☁️ Синхронизация (ПК ↔ Телефон)</h2>
-        <button class="btn-close" data-close-modal="modalCloudSync" aria-label="Закрыть">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <p class="modal-intro">
-          Введите ваш ID студента и придумайте пароль — чтобы расписание, пропуски «НБ» и задания были доступны и на компьютере, и на телефоне.
-        </p>
-
-        <form id="cloudSyncForm">
-          <div class="form-row">
-            <div class="form-group">
-              <label for="quickSyncIdInput">Ваш ID студента (логин) *</label>
-              <input type="text" id="quickSyncIdInput" class="input-field" placeholder="Например: 516231102891" required />
-            </div>
-            <div class="form-group">
-              <label for="quickSyncPinInput">Пароль синхронизации *</label>
-              <input type="password" id="quickSyncPinInput" class="input-field" placeholder="Придумайте пароль" required />
-            </div>
-          </div>
-
-          <div class="cloud-action-cards">
-            <button type="button" class="btn btn-primary cloud-big-btn" id="btnPushToCloud">
-              <span>⬆ Сохранить в облако</span>
-              <small>Отправить данные с этого устройства</small>
-            </button>
-            <button type="button" class="btn btn-secondary cloud-big-btn" id="btnPullFromCloud">
-              <span>⬇ Загрузить из облака</span>
-              <small>Получить данные на это устройство</small>
-            </button>
-          </div>
-
-          <div id="cloudSyncMessage" class="alert-box hidden"></div>
-
-          <details class="backup-details">
-            <summary>Резервная копия в файл (.json)</summary>
-            <div class="backup-details-inner">
-              <button type="button" class="btn btn-ghost btn-xs" id="btnExportJson">Скачать .json</button>
-              <label class="btn btn-ghost btn-xs" style="cursor:pointer; margin:0;">
-                <span>Загрузить .json</span>
-                <input type="file" id="importJsonFileInput" accept=".json" class="hidden" />
-              </label>
-            </div>
-          </details>
-
-          <div class="modal-footer">
-            <button type="button" class="btn btn-ghost btn-sm" data-close-modal="modalCloudSync">Закрыть</button>
-            <button type="submit" class="btn btn-secondary btn-sm">Запомнить ID и пароль</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Модальное окно: Подключение HEMIS -->
-  <div class="modal-backdrop hidden" id="modalHemis">
-    <div class="modal-card" role="dialog" aria-labelledby="modalHemisTitle">
-      <div class="modal-header">
-        <h2 id="modalHemisTitle">Подключение к HEMIS</h2>
-        <button class="btn-close" data-close-modal="modalHemis" aria-label="Закрыть">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <div class="mode-pills">
-          <button type="button" class="mode-pill active" data-hemis-mode="credentials">Логин и пароль</button>
-          <button type="button" class="mode-pill" data-hemis-mode="token">Токен API</button>
-          <button type="button" class="mode-pill" data-hemis-mode="json">JSON</button>
-        </div>
-
-        <form id="hemisConnectForm">
-          <div class="form-group">
-            <label for="hemisUniSelect">Университет</label>
-            <select id="hemisUniSelect" class="input-select">
-              <option value="https://student.tift.uz">ТМФТУ (TIFT) — student.tift.uz</option>
-              <option value="https://student.hemis.uz">Единый портал — student.hemis.uz</option>
-              <option value="https://student.tuit.uz">ТАТУ (TUIT) — student.tuit.uz</option>
-              <option value="https://student.tdtu.uz">ТГТУ (TDTU) — student.tdtu.uz</option>
-              <option value="https://student.nuu.uz">НУУз (UzMU) — student.nuu.uz</option>
-              <option value="https://student.tsue.uz">ТГЭУ (TSUE) — student.tsue.uz</option>
-              <option value="https://student.samdu.uz">СамГУ (SamDU) — student.samdu.uz</option>
-              <option value="https://student.buxdu.uz">БухГУ (BuxDU) — student.buxdu.uz</option>
-              <option value="https://student.ferpi.uz">ФерПИ (FerPI) — student.ferpi.uz</option>
-              <option value="https://student.uzswlu.uz">УзГУМЯ (UzSWLU) — student.uzswlu.uz</option>
-              <option value="https://student.tashpmi.uz">ТашПМИ — student.tashpmi.uz</option>
-              <option value="https://student.tma.uz">ТМА (TMA) — student.tma.uz</option>
-              <option value="https://student.urdu.uz">УрГУ (UrDU) — student.urdu.uz</option>
-              <option value="https://student.ndpi.uz">НДПИ — student.ndpi.uz</option>
-              <option value="custom">Другой вуз (свой URL)...</option>
-            </select>
-          </div>
-
-          <div class="form-group hidden" id="customUniUrlGroup">
-            <label for="hemisCustomUrl">URL портала студента</label>
-            <input type="url" id="hemisCustomUrl" class="input-field" placeholder="https://student.tift.uz" />
-          </div>
-
-          <div id="hemisModeCredentials" class="hemis-mode-section">
-            <div class="form-row">
-              <div class="form-group">
-                <label for="hemisLoginInput">ID студента (Логин)</label>
-                <input type="text" id="hemisLoginInput" class="input-field" placeholder="516231102891" autocomplete="username" />
-              </div>
-              <div class="form-group">
-                <label for="hemisPasswordInput">Пароль</label>
-                <input type="password" id="hemisPasswordInput" class="input-field" placeholder="Ваш пароль" autocomplete="current-password" />
-              </div>
-            </div>
-          </div>
-
-          <div id="hemisModeToken" class="hemis-mode-section hidden">
-            <div class="form-group">
-              <label for="hemisTokenInput">Bearer Token из HEMIS API</label>
-              <input type="text" id="hemisTokenInput" class="input-field" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." />
-            </div>
-          </div>
-
-          <div id="hemisModeJson" class="hemis-mode-section hidden">
-            <div class="form-group">
-              <label for="hemisRawJsonInput">JSON расписания (`/rest/v1/education/schedule`)</label>
-              <textarea id="hemisRawJsonInput" class="input-textarea" rows="4" placeholder='{"success": true, "data": [ ... ]}'></textarea>
-            </div>
-          </div>
-
-          <input type="checkbox" id="hemisUseCorsProxy" checked class="hidden" />
-          <div id="hemisConnectionStatus" class="alert-box hidden"></div>
-
-          <div class="modal-footer">
-            <button type="button" class="btn btn-ghost btn-sm" id="btnModalDemoSchedule">Демо-данные</button>
-            <div class="modal-footer-right">
-              <button type="button" class="btn btn-secondary btn-sm" data-close-modal="modalHemis">Отмена</button>
-              <button type="submit" class="btn btn-primary btn-sm" id="btnSubmitHemis">Загрузить расписание</button>
-            </div>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Модальное окно: Добавление / Редактирование задания -->
-  <div class="modal-backdrop hidden" id="modalTask">
-    <div class="modal-card" role="dialog" aria-labelledby="modalTaskTitle">
-      <div class="modal-header">
-        <h2 id="modalTaskTitle">Новое задание</h2>
-        <button class="btn-close" data-close-modal="modalTask" aria-label="Закрыть">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <form id="taskForm">
-          <input type="hidden" id="taskEditId" value="" />
-
-          <div class="form-group">
-            <label for="taskSubjectSelect">Предмет</label>
-            <div class="subject-input-wrapper">
-              <select id="taskSubjectSelect" class="input-select"></select>
-              <input type="text" id="taskCustomSubjectInput" class="input-field hidden" placeholder="Название предмета..." />
-              <button type="button" class="btn btn-ghost btn-xs" id="btnToggleCustomSubject">Свой</button>
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="taskDayOfWeekSelect">День недели</label>
-              <select id="taskDayOfWeekSelect" class="input-select" required>
-                <option value="1">Понедельник</option>
-                <option value="2">Вторник</option>
-                <option value="3">Среда</option>
-                <option value="4">Четверг</option>
-                <option value="5">Пятница</option>
-                <option value="6">Суббота</option>
-              </select>
-              <small class="form-hint" id="taskDayMatchHint"></small>
-            </div>
-
-            <div class="form-group">
-              <label for="taskPrioritySelect">Важность</label>
-              <select id="taskPrioritySelect" class="input-select">
-                <option value="normal">Обычное</option>
-                <option value="high">Важное</option>
-                <option value="urgent">Срочно!</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="taskTitleInput">Задание *</label>
-            <input type="text" id="taskTitleInput" class="input-field" placeholder="Что нужно сделать к паре?" required />
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="taskTypeSelect">Формат</label>
-              <select id="taskTypeSelect" class="input-select">
-                <option value="Практика / ДЗ">Практика / ДЗ</option>
-                <option value="Лабораторная">Лабораторная</option>
-                <option value="СРС / Mustaqil ish">СРС (Mustaqil ish)</option>
-                <option value="Конспект / Лекция">Конспект / Лекция</option>
-                <option value="Рубежный / Итоговый контроль">Контроль (ON / YN)</option>
-                <option value="Презентация / Реферат">Презентация / Реферат</option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="taskDeadlineInput">Дедлайн (необязательно)</label>
-              <input type="date" id="taskDeadlineInput" class="input-field" />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="taskLinkInput">📎 Ссылка (Google Docs, GitHub, Canva и др.)</label>
-            <input type="url" id="taskLinkInput" class="input-field" placeholder="https://..." />
-          </div>
-
-          <div class="form-group">
-            <label>☑️ Чек-лист (подзадачи)</label>
-            <div class="subtask-add-row">
-              <input type="text" id="newSubtaskInput" class="input-field" placeholder="Добавить шаг и нажать Enter..." />
-              <button type="button" class="btn btn-secondary btn-sm" id="btnAddSubtask">+</button>
-            </div>
-            <ul id="subtasksEditorList" class="subtasks-editor-list"></ul>
-          </div>
-
-          <div class="form-group">
-            <label for="taskNotesInput">Заметки</label>
-            <textarea id="taskNotesInput" class="input-textarea" rows="2" placeholder="Комментарий, вариант, страницы..."></textarea>
-          </div>
-
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary btn-sm" data-close-modal="modalTask">Отмена</button>
-            <button type="submit" class="btn btn-primary btn-sm">Сохранить</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Модальное окно: Напоминания и PWA -->
-  <div class="modal-backdrop hidden" id="modalReminders">
-    <div class="modal-card" role="dialog" aria-labelledby="modalRemindersTitle">
-      <div class="modal-header">
-        <h2 id="modalRemindersTitle">🔔 Напоминания и приложение</h2>
-        <button class="btn-close" data-close-modal="modalReminders" aria-label="Закрыть">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <form id="remindersForm">
-          <label class="toggle-switch" style="font-size:0.9rem; font-weight:600; color:var(--text-primary); margin-bottom:0.85rem;">
-            <input type="checkbox" id="chkEnableEveningReminders" />
-            <span>Вечернее уведомление о завтрашних парах и заданиях</span>
-          </label>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="reminderTimeInput">Время напоминания</label>
-              <input type="time" id="reminderTimeInput" class="input-field" value="20:00" />
-            </div>
-            <div class="form-group" style="justify-content:flex-end;">
-              <button type="button" class="btn btn-secondary btn-sm" id="btnTestNotification">
-                Проверить уведомление
-              </button>
-            </div>
-          </div>
-
-          <hr class="divider" />
-
-          <div class="pwa-install-box">
-            <h4 style="font-size:0.9rem; margin-bottom:0.35rem;">📱 Установить как приложение (PWA)</h4>
-            <p class="form-hint" style="margin-bottom:0.65rem;">
-              Работает на телефоне и ПК даже без интернета.
-            </p>
-            <button type="button" class="btn btn-primary btn-sm hidden" id="btnInstallPwaPrompt" style="margin-bottom:0.5rem;">
-              📲 Установить в 1 клик
-            </button>
-            <ul class="pwa-tips-list">
-              <li><strong>Android:</strong> меню браузера <code>⋮</code> → <em>«Установить приложение»</em>.</li>
-              <li><strong>iPhone (Safari):</strong> <em>«Поделиться»</em> → <em>«На экран „Домой“»</em>.</li>
-            </ul>
-          </div>
-
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary btn-sm" data-close-modal="modalReminders">Закрыть</button>
-            <button type="submit" class="btn btn-primary btn-sm">Сохранить</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Модальное окно: Ручное добавление пары -->
-  <div class="modal-backdrop hidden" id="modalManualLesson">
-    <div class="modal-card" role="dialog" aria-labelledby="modalManualLessonTitle">
-      <div class="modal-header">
-        <h2 id="modalManualLessonTitle">Добавить пару</h2>
-        <button class="btn-close" data-close-modal="modalManualLesson" aria-label="Закрыть">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <form id="manualLessonForm">
-          <div class="form-group">
-            <label for="manualSubjectInput">Предмет *</label>
-            <input type="text" id="manualSubjectInput" class="input-field" placeholder="Название предмета" required />
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="manualDaySelect">День недели</label>
-              <select id="manualDaySelect" class="input-select" required>
-                <option value="1">Понедельник</option>
-                <option value="2">Вторник</option>
-                <option value="3">Среда</option>
-                <option value="4">Четверг</option>
-                <option value="5">Пятница</option>
-                <option value="6">Суббота</option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="manualPairSelect">Время пары</label>
-              <select id="manualPairSelect" class="input-select" required>
-                <option value="1|08:30|09:50">1 пара (08:30 – 09:50)</option>
-                <option value="2|10:00|11:20">2 пара (10:00 – 11:20)</option>
-                <option value="3|11:30|12:50">3 пара (11:30 – 12:50)</option>
-                <option value="4|13:30|14:50">4 пара (13:30 – 14:50)</option>
-                <option value="5|15:00|16:20">5 пара (15:00 – 16:20)</option>
-                <option value="6|16:30|17:50">6 пара (16:30 – 17:50)</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="manualTrainingTypeSelect">Тип</label>
-              <select id="manualTrainingTypeSelect" class="input-select">
-                <option value="Лекция">Лекция</option>
-                <option value="Практика">Практика</option>
-                <option value="Лабораторная">Лабораторная</option>
-                <option value="Семинар">Семинар</option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="manualRoomInput">Аудитория</label>
-              <input type="text" id="manualRoomInput" class="input-field" placeholder="Например: 410" />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="manualTeacherInput">Преподаватель</label>
-            <input type="text" id="manualTeacherInput" class="input-field" placeholder="Ф.И.О." />
-          </div>
-
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary btn-sm" data-close-modal="modalManualLesson">Отмена</button>
-            <button type="submit" class="btn btn-primary btn-sm">Добавить</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Уведомления (Toast) -->
-  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
-
-  <script defer src="js/hemis.js?v=4"></script>
-  <script defer src="js/storage.js?v=4"></script>
-  <script defer src="js/app.js?v=4"></script>
+  <a class="skip-link" href="#main">К содержимому</a>
+  <div id="app"><div class="boot">HEMIS<span>PLANNER</span><p>Собираем вашу учебную неделю…</p></div></div>
+  <div id="modal-root"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <noscript>Для работы HEMIS Planner включите JavaScript в браузере.</noscript>
+  <script>
+    (function () {
+      'use strict';
+      var release = '2026.10.20.5';
+      var root = document.getElementById('app');
+      var slowTimer;
+      function showError(error) {
+        clearTimeout(slowTimer);
+        root.textContent = '';
+        var panel = document.createElement('section');
+        panel.className = 'startup-message';
+        panel.setAttribute('role', 'alert');
+        var heading = document.createElement('h1');
+        heading.textContent = location.protocol === 'file:' ? 'Откройте Planner через start.bat' : 'Не удалось запустить Planner';
+        panel.appendChild(heading);
+        var text = document.createElement('p');
+        text.textContent = location.protocol === 'file:'
+          ? 'Браузер не разрешает загружать модули при открытии HTML-файла двойным нажатием. Запустите start.bat из этой папки или откройте опубликованный сайт по HTTPS.'
+          : 'Проверьте, что все файлы приложения загружены в одну папку рядом с index.html. Проверка ниже покажет отсутствующие файлы. Ваши сохранённые задания не удаляются.';
+        panel.appendChild(text);
+        if (location.protocol !== 'file:') {
+          var checkLink = document.createElement('a');
+          checkLink.href = './check.html';
+          checkLink.textContent = 'Проверить файлы сайта';
+          panel.appendChild(checkLink);
+          var retry = document.createElement('button');
+          retry.type = 'button';
+          retry.textContent = 'Повторить загрузку';
+          retry.addEventListener('click', function () { location.reload(); });
+          panel.appendChild(retry);
+        }
+        var details = document.createElement('pre');
+        details.textContent = error && error.message ? error.message : String(error);
+        panel.appendChild(details);
+        var version = document.createElement('small');
+        version.textContent = 'HEMIS Planner · версия ' + release;
+        panel.appendChild(version);
+        root.appendChild(panel);
+      }
+      if (location.protocol === 'file:') { showError(new Error('Для запуска нужен HTTPS или localhost.')); return; }
+      slowTimer = setTimeout(function () {
+        if (!root.querySelector('.layout')) {
+          var hint = document.createElement('p');
+          hint.style.cssText = 'font:13px/1.8 Arial,sans-serif;text-align:center;padding:16px;color:#71717a';
+          var link = document.createElement('a');
+          link.href = './check.html';
+          link.textContent = 'Загрузка затянулась. Проверить файлы сайта →';
+          hint.appendChild(link);
+          root.appendChild(hint);
+        }
+      }, 12000);
+      import('./app.js?v=' + release).then(function () {
+        clearTimeout(slowTimer);
+        if (!root.querySelector('.layout')) showError(new Error('Модуль загружен, но интерфейс не запустился.'));
+      }).catch(showError);
+    })();
+  </script>
 </body>
 </html>
